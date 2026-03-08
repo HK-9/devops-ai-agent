@@ -27,9 +27,13 @@ class Settings(BaseSettings):
     mcp_aws_infra_command: str = "python -m src.mcp_servers.aws_infra.server"
     mcp_monitoring_command: str = "python -m src.mcp_servers.monitoring.server"
     mcp_teams_command: str = "python -m src.mcp_servers.teams.server"
+    mcp_sns_command: str = "python -m src.mcp_servers.sns.server"
 
     # ── Teams ────────────────────────────────────────────────────────────
     teams_webhook_url: str = ""
+
+    # ── SNS ──────────────────────────────────────────────────────────────
+    sns_topic_arn: str = ""
 
     # ── Timeouts & Limits ────────────────────────────────────────────────
     tool_timeout_seconds: int = 30

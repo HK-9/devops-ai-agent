@@ -38,6 +38,12 @@ specific tool for the task:
 - `create_incident_notification` — Pre-formatted incident card with
   severity, instance details, and recommended actions.
 
+### Alerting (with failover)
+- `send_alert_with_failover` — **Preferred for all alerts.**  Attempts
+  to send via Teams first; if Teams is unavailable, automatically fails
+  over to AWS SNS (email).  Use this instead of `send_teams_message`
+  whenever you need to guarantee delivery.
+
 ## Behavioural Guardrails
 1. **Read before write** — Always gather metrics and instance state before
    taking any remediation action (restart, terminate, etc.).
@@ -67,7 +73,8 @@ def build_alarm_prompt(instance_id: str, alarm_name: str, reason: str) -> str:
         f"- **Instance**: {instance_id}\n"
         f"- **Reason**: {reason}\n\n"
         f"Please investigate the instance, pull relevant metrics, and "
-        f"report your findings to the Teams channel. If the situation is "
+        f"report your findings using `send_alert_with_failover` so the "
+        f"alert is delivered even if Teams is down. If the situation is "
         f"critical, take appropriate remediation action."
     )
 

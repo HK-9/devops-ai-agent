@@ -18,6 +18,8 @@ from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subs
 from constructs import Construct
 
 # ── Pre-build the Lambda bundle at synth time ────────────────────────────
@@ -74,6 +76,7 @@ class AgentRunnerStack(cdk.Stack):
         construct_id: str,
         *,
         alarm_rule: events.Rule | None = None,
+        alert_email: str = "",
         **kwargs,
     ) -> None:  # type: ignore[no-untyped-def]
         super().__init__(scope, construct_id, **kwargs)
@@ -89,7 +92,18 @@ class AgentRunnerStack(cdk.Stack):
             retention=logs.RetentionDays.TWO_WEEKS,
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
+        # ── SNS Topic (failover alerting) ────────────────────────────
+        self.alert_topic = sns.Topic(
+            self,
+            "AlertTopic",
+            topic_name="devops-agent-alerts",
+            display_name="DevOps Agent Alerts",
+        )
 
+        if alert_email:
+            self.alert_topic.add_subscription(
+                subs.EmailSubscription(alert_email)
+            )
         # ── Lambda function ──────────────────────────────────────────
         self.agent_fn = _lambda.Function(
             self,
@@ -107,6 +121,7 @@ class AgentRunnerStack(cdk.Stack):
                 # AGENT_ID and AGENT_ALIAS_ID left empty → uses invoke_inline_agent
                 "BEDROCK_MODEL_ID": "amazon.nova-lite-v1:0",
                 # "TEAMS_WEBHOOK_URL": "...", # Uncomment and add URL when ready
+                "SNS_TOPIC_ARN": self.alert_topic.topic_arn,
             },
             log_group=log_group,
         )
@@ -147,6 +162,9 @@ class AgentRunnerStack(cdk.Stack):
             )
         )
 
+        # SNS publish (for alert failover)
+        self.alert_topic.grant_publish(self.agent_fn)
+
         # ── EventBridge → Lambda wiring ──────────────────────────────
         if alarm_rule is not None:
             alarm_rule.add_target(targets.LambdaFunction(self.agent_fn))
@@ -154,3 +172,4 @@ class AgentRunnerStack(cdk.Stack):
         # ── Outputs ──────────────────────────────────────────────────
         cdk.CfnOutput(self, "FunctionArn", value=self.agent_fn.function_arn)
         cdk.CfnOutput(self, "FunctionName", value=self.agent_fn.function_name)
+        cdk.CfnOutput(self, "SnsTopicArn", value=self.alert_topic.topic_arn)

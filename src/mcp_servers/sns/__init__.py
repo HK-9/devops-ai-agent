@@ -1,0 +1,1 @@
+# sns MCP server package

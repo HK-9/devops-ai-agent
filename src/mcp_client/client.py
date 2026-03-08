@@ -1,7 +1,7 @@
 """
 Unified MCP Client Adapter.
 
-Connects to all three MCP servers (AWS Infra, Monitoring, Teams) and
+Connects to all MCP servers (AWS Infra, Monitoring, Teams, SNS) and
 exposes a single interface for tool discovery and invocation. This is
 the bridge between AgentCore and the MCP tool layer.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,20 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from src.agent.config import settings
 from src.utils.aws_helpers import setup_logging
+
+# AWS credential / config env vars that must be forwarded to MCP
+# server subprocesses (e.g. inside Lambda where they come from the
+# execution role).
+_AWS_ENV_VARS = [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "SNS_TOPIC_ARN",
+    "TEAMS_WEBHOOK_URL",
+]
 
 logger = setup_logging("mcp-client")
 
@@ -73,6 +88,10 @@ class MCPClient:
                 name="teams",
                 command=settings.mcp_teams_command,
             ),
+            "sns": MCPServerConnection(
+                name="sns",
+                command=settings.mcp_sns_command,
+            ),
         }
         self._tool_index: dict[str, str] = {}  # tool_name → server_name
         self._contexts: list[Any] = []  # context managers to clean up
@@ -100,7 +119,18 @@ class MCPClient:
     async def _connect_server(self, server: MCPServerConnection) -> None:
         """Connect to a single MCP server via stdio."""
         parts = shlex.split(server.command)
-        params = StdioServerParameters(command=parts[0], args=parts[1:])
+
+        # Build env: start with the MCP SDK's safe defaults, then layer
+        # on AWS credential / config vars so subprocesses can call AWS.
+        from mcp.client.stdio import get_default_environment
+
+        env = get_default_environment()
+        for key in _AWS_ENV_VARS:
+            val = os.environ.get(key)
+            if val:
+                env[key] = val
+
+        params = StdioServerParameters(command=parts[0], args=parts[1:], env=env)
 
         # Open the stdio transport
         transport_ctx = stdio_client(params)
