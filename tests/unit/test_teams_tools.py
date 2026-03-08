@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.agent.config import settings
 from src.mcp_servers.teams.tools import (
     create_incident_notification,
     send_teams_message,
@@ -18,8 +19,11 @@ from src.mcp_servers.teams.tools import (
 
 @pytest.fixture
 def mock_webhook_url(monkeypatch):
-    """Set a fake Teams webhook URL."""
-    monkeypatch.setenv("TEAMS_WEBHOOK_URL", "https://outlook.office.com/webhook/test-hook")
+    """Set a fake Teams webhook URL via settings (loaded at import time)."""
+    monkeypatch.setattr(
+        settings, "teams_webhook_url",
+        "https://outlook.office.com/webhook/test-hook",
+    )
 
 
 @pytest.mark.unit
@@ -36,7 +40,7 @@ class TestSendTeamsMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_no_url(self, monkeypatch):
-        monkeypatch.setenv("TEAMS_WEBHOOK_URL", "")
+        monkeypatch.setattr(settings, "teams_webhook_url", "")
         result = await send_teams_message("Test message")
         assert result["ok"] is False
         assert "not configured" in result.get("error", "")

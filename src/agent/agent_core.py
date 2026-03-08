@@ -307,7 +307,7 @@ class DevOpsAgent:
         Groups all MCP tools under a single ``MCPTools`` action group
         with ``RETURN_CONTROL`` so tool execution is handled locally.
         """
-        MAX_PARAMS_PER_FUNCTION = 5  # Bedrock inline-agent quota
+        max_params_per_function = 5  # Bedrock inline-agent quota
 
         functions: list[dict[str, Any]] = []
         for tool in tool_defs:
@@ -320,13 +320,13 @@ class DevOpsAgent:
                 properties.items(),
                 key=lambda kv: (kv[0] not in required_params, kv[0]),
             )
-            if len(sorted_params) > MAX_PARAMS_PER_FUNCTION:
-                dropped = [k for k, _ in sorted_params[MAX_PARAMS_PER_FUNCTION:]]
+            if len(sorted_params) > max_params_per_function:
+                dropped = [k for k, _ in sorted_params[max_params_per_function:]]
                 logger.warning(
                     "Tool %s has %d params (limit %d) — dropping: %s",
-                    tool["name"], len(sorted_params), MAX_PARAMS_PER_FUNCTION, dropped,
+                    tool["name"], len(sorted_params), max_params_per_function, dropped,
                 )
-                sorted_params = sorted_params[:MAX_PARAMS_PER_FUNCTION]
+                sorted_params = sorted_params[:max_params_per_function]
 
             parameters: dict[str, dict[str, Any]] = {}
             for param_name, param_schema in sorted_params:

@@ -189,14 +189,15 @@ class MCPClient:
             )
             # Parse the text content from the response
             if result.content and len(result.content) > 0:
-                text = result.content[0].text
+                first = result.content[0]
+                text = first.text if hasattr(first, "text") else str(first)
                 try:
                     return json.loads(text)  # type: ignore[no-any-return]
                 except json.JSONDecodeError:
                     return {"result": text}
             return {"result": None}
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("Tool %s timed out after %ds", name, settings.tool_timeout_seconds)
             return {"error": True, "message": f"Tool {name} timed out"}
         except Exception as exc:

@@ -6,15 +6,17 @@ Uses moto to mock the EC2 service so tests run without AWS credentials.
 
 from __future__ import annotations
 
-import pytest
 import boto3
+import pytest
 from moto import mock_aws
 
+from src.agent.config import settings
 from src.mcp_servers.aws_infra.tools import (
     describe_ec2_instance,
     list_ec2_instances,
     restart_ec2_instance,
 )
+from src.utils.aws_helpers import get_boto_session
 
 
 @pytest.fixture
@@ -25,6 +27,10 @@ def aws_credentials(monkeypatch):
     monkeypatch.setenv("AWS_SECURITY_TOKEN", "testing")
     monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    # Patch settings directly (loaded at import time, env vars don't help)
+    monkeypatch.setattr(settings, "aws_region", "us-east-1")
+    # Clear cached boto3 session so it picks up the patched region
+    get_boto_session.cache_clear()
 
 
 @pytest.fixture
@@ -50,6 +56,8 @@ def ec2_with_instances(aws_credentials):
         )
         instance_ids = [inst["InstanceId"] for inst in response["Instances"]]
         yield {"client": ec2, "instance_ids": instance_ids}
+        # Clear cache after test to avoid leaking mocked session
+        get_boto_session.cache_clear()
 
 
 @pytest.mark.unit

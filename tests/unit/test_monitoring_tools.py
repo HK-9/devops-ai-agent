@@ -6,7 +6,7 @@ Uses moto to mock the CloudWatch service.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import boto3
 import pytest
@@ -40,7 +40,7 @@ def cloudwatch_with_metrics(aws_credentials):
                 {
                     "MetricName": "CPUUtilization",
                     "Dimensions": [{"Name": "InstanceId", "Value": "i-0abc123def456789a"}],
-                    "Timestamp": datetime.now(timezone.utc),
+                    "Timestamp": datetime.now(UTC),
                     "Value": 85.5,
                     "Unit": "Percent",
                 },

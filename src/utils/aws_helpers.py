@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from functools import lru_cache
+from functools import cache
 from typing import Any
 
 import boto3
@@ -64,7 +64,7 @@ _RETRY_CONFIG = BotoConfig(
 )
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_boto_session() -> boto3.Session:
     """Return a cached boto3 session honouring the configured profile/region."""
     kwargs: dict[str, Any] = {"region_name": settings.aws_region}
@@ -80,7 +80,7 @@ def get_client(service: str) -> Any:
         ec2 = get_client("ec2")
         cw  = get_client("cloudwatch")
     """
-    return get_boto_session().client(service, config=_RETRY_CONFIG)
+    return get_boto_session().client(service, config=_RETRY_CONFIG)  # type: ignore[call-overload]
 
 
 def safe_boto_call(func: Any, **kwargs: Any) -> dict[str, Any]:

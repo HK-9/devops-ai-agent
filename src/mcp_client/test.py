@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+
 from src.mcp_client.client import MCPClient
 
 # 1. Configure logging to use stderr
@@ -9,7 +10,7 @@ from src.mcp_client.client import MCPClient
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stderr 
+    stream=sys.stderr,
 )
 
 # 2. Specifically silence the MCP internal validation logs
@@ -17,19 +18,21 @@ logging.basicConfig(
 logging.getLogger("mcp").setLevel(logging.ERROR)
 logger = logging.getLogger("mcp-client-terminal")
 
-async def main():
+
+async def main() -> None:
     logger.info("Starting MCP Tool Discovery...")
     try:
         async with MCPClient() as client:
             tools = await client.discover_tools()
-            
+
             # 3. Use formatted printing for the results
             logger.info(f"Successfully discovered {len(tools)} tools.")
             for tool in tools:
                 print(f"[{tool.server_name}] Found tool: {tool.name}")
-                
-    except Exception as e:
-        logger.error(f"An error occurred during discovery: {e}")
+
+    except Exception as exc:
+        logger.error(f"An error occurred during discovery: {exc}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

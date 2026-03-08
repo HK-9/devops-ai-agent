@@ -7,7 +7,7 @@ Each function is designed to be registered as an MCP tool.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.utils.aws_helpers import get_client, safe_boto_call, setup_logging
@@ -35,7 +35,7 @@ async def get_cpu_metrics(
         max, min), and ``summary`` (avg, peak, latest).
     """
     cw = get_client("cloudwatch")
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     start = end - timedelta(minutes=minutes)
 
     response = safe_boto_call(
@@ -115,7 +115,7 @@ async def get_memory_metrics(
         CloudWatch Agent is not installed.
     """
     cw = get_client("cloudwatch")
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     start = end - timedelta(minutes=minutes)
 
     response = safe_boto_call(
@@ -175,7 +175,7 @@ async def get_disk_usage(
         Dict with datapoints and summary.
     """
     cw = get_client("cloudwatch")
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     start = end - timedelta(minutes=minutes)
 
     response = safe_boto_call(
