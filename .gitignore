@@ -1,0 +1,14 @@
+.env
+.lambda-bundle/
+.venv/
+.venv-cdk/
+cdk.out/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# local run artifacts
+response.json
+response_model.json
+lambda_response.json
+model_test.json

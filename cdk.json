@@ -1,0 +1,16 @@
+{
+    "app": "python infra/app.py",
+    "watch": {
+        "include": [
+            "infra/**"
+        ],
+        "exclude": [
+            "**/__pycache__",
+            "*.pyc"
+        ]
+    },
+    "context": {
+        "region": "ap-southeast-2",
+        "monitored_instance_id": "i-0bf11b006e8f12844"
+    }
+}

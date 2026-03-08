@@ -1,0 +1,456 @@
+# DevOps AI Agent — Beginner's Complete Setup Guide
+
+> This guide answers every question about setting up this project from scratch.  
+> No prior AWS experience assumed.
+
+---
+
+## 🧱 Part 1: Understanding the Architecture First
+
+Before touching AWS, understand **what each piece is**:
+
+```
+Your Local Machine / Lambda
+        │
+        ▼
+[Lambda Function]  ← Your Python code in src/handlers/lambda_handler.py
+        │
+        ▼
+[Bedrock AgentCore]  ← Amazon's AI service — does the thinking
+        │
+        ▼ (tool calls)
+[MCP Servers]  ← Your Python code in src/mcp_servers/
+        │
+        ├──→ EC2 API       (list/describe/restart instances)
+        ├──→ CloudWatch    (get CPU/memory/disk metrics)
+        └──→ Teams Webhook (send notifications)
+```
+
+**Key insight:** You write the Lambda code locally. AWS runs it in the cloud. The same Python code works both places.
+
+---
+
+## 🤔 Part 2: Why Does Lambda Code Exist Locally?
+
+> **Your question:** "Is this Lambda code defined on AWS manually? Why is there local code for Lambda?"
+
+This confuses everyone at first. Here's the simple truth:
+
+**Lambda is just a Python function that AWS runs for you in the cloud.**
+
+Your file [src/handlers/lambda_handler.py](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/handlers/lambda_handler.py) is just a regular Python file with a [handler()](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/handlers/lambda_handler.py#35-55) function. AWS doesn't know it exists yet. You have to **upload it** to AWS Lambda.
+
+CDK does that upload for you automatically:
+
+```python
+# infra/stacks/agent_runner_stack.py — line 30
+code=_lambda.Code.from_asset(".")  # ← "take everything in this folder and upload it"
+```
+
+So the workflow is:
+```
+You write Python code locally
+         │
+         ▼
+CDK packages it into a ZIP
+         │
+         ▼
+CDK uploads ZIP to AWS Lambda
+         │
+         ▼
+AWS runs it when CloudWatch alarm fires
+```
+
+**You never manually create the Lambda in the Console** — CDK does it.  
+But you DO need to add env vars manually (or fix the CDK code — shown in Part 6).
+
+---
+
+## 🔐 Part 3: IAM Permissions — What They Are and How to Set Them Up
+
+### What is IAM?
+
+IAM (Identity and Access Management) is AWS's security system.  
+**Rule:** Every piece of code that touches AWS needs permission to do so.
+
+In this project there are **two identities** that need permissions:
+
+| Who | Needs Permission To |
+|---|---|
+| **Your local machine** (YOU, running tests) | Call EC2, CloudWatch, Bedrock APIs |
+| **Lambda function** (AWS running your code) | Call EC2, CloudWatch, Bedrock APIs |
+
+### 3a. Permissions for YOUR Local Machine
+
+This is done via `~/.aws/credentials`. Run this once:
+
+```bash
+aws configure
+```
+
+Enter your:
+- **Access Key ID** — from AWS Console → IAM → Your user → Security credentials → Create access key
+- **Secret Access Key** — shown only once when you create it
+- **Region** — `ap-southeast-2`
+
+**Now verify it works:**
+```bash
+aws sts get-caller-identity
+```
+You should see your account ID and username. If you get an error, your credentials are wrong.
+
+**What permissions does your IAM user need?**  
+Go to AWS Console → IAM → Users → your username → Add permissions → Attach policies:
+
+| Policy Name | Why Needed |
+|---|---|
+| `AmazonEC2ReadOnlyAccess` | For [list_ec2_instances](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/aws_infra/tools.py#20-76), [describe_ec2_instance](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/aws_infra/tools.py#78-132) |
+| `AmazonEC2FullAccess` | Only if you want to test [restart_ec2_instance](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/aws_infra/tools.py#134-171) |
+| `CloudWatchReadOnlyAccess` | For [get_cpu_metrics](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/monitoring/tools.py#21-76), [get_disk_usage](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/monitoring/tools.py#160-223) |
+| `AmazonBedrockFullAccess` | For invoking your agent |
+
+**How to add policies:**
+1. AWS Console → search "IAM" → Users
+2. Click your username
+3. Click **"Add permissions"** → **"Attach policies directly"**
+4. Search for each policy name above → check the box → **Next** → **Add permissions**
+
+---
+
+### 3b. Permissions for the Lambda Function
+
+When Lambda runs your code in the cloud, it uses an **IAM Role** (not your personal credentials). CDK automatically creates this role and adds these permissions via [infra/stacks/agent_runner_stack.py](file:///c:/Users/pvhar/codelabs/devops-ai-agent/infra/stacks/agent_runner_stack.py):
+
+```python
+# Lines 44–78 in agent_runner_stack.py — CDK adds these automatically
+ec2:DescribeInstances    ✅ Already in CDK
+ec2:StopInstances        ✅ Already in CDK
+ec2:StartInstances       ✅ Already in CDK
+cloudwatch:GetMetricStatistics  ✅ Already in CDK
+bedrock:InvokeAgent      ✅ Already in CDK
+bedrock:InvokeModel      ✅ Already in CDK
+```
+
+> [!NOTE]
+> **You don't need to manually add any IAM permissions for Lambda** — CDK handles it all when you run `cdk deploy`. The only reason you'd add them manually is if you're NOT using CDK.
+
+**The Bedrock permission should target your specific agent:**
+After `cdk deploy`, go to:
+```
+AWS Console → Lambda → devops-ai-agent-handler → Configuration → Permissions
+→ Click the Role name → Add this inline policy:
+```
+```json
+{
+    "Effect": "Allow",
+    "Action": ["bedrock:InvokeAgent"],
+    "Resource": [
+        "arn:aws:bedrock:ap-southeast-2:YOUR_ACCOUNT_ID:agent/KYZ4EKSMX5",
+        "arn:aws:bedrock:ap-southeast-2:YOUR_ACCOUNT_ID:agent-alias/KYZ4EKSMX5/LFVTIWMNFK"
+    ]
+}
+```
+Replace `YOUR_ACCOUNT_ID` with your 12-digit account ID (visible at top right of AWS Console).
+
+---
+
+## 📊 Part 4: CloudWatch Agent — Memory & Disk Metrics
+
+### Why This Matters
+
+Your code has two tools that need extra setup:
+- [get_memory_metrics](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/monitoring/tools.py#101-158) → needs `CWAgent` namespace metric `mem_used_percent`
+- [get_disk_usage](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/monitoring/tools.py#160-223) → needs `CWAgent` namespace metric `disk_used_percent`
+
+Without the CloudWatch Agent, these tools return:
+```json
+{"note": "No data — ensure CloudWatch Agent is installed and publishing mem_used_percent."}
+```
+
+**CPU metrics ([get_cpu_metrics](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/monitoring/tools.py#21-76)) work without any agent** — AWS collects those automatically.
+
+### Do You Need It Right Now?
+
+**No — skip it for now.** The agent will still work with just CPU metrics.  
+Come back to this later when you want full observability.
+
+### How to Install (when ready)
+
+**Step 1:** SSH into your EC2 instance or use AWS Systems Manager Session Manager.
+
+**Step 2:** Install the agent:
+```bash
+# Amazon Linux 2 / Amazon Linux 2023
+sudo yum install -y amazon-cloudwatch-agent
+
+# Ubuntu
+sudo apt-get install -y amazon-cloudwatch-agent
+```
+
+**Step 3:** Create the config file at `/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json`:
+```json
+{
+    "metrics": {
+        "metrics_collected": {
+            "mem": {
+                "measurement": ["mem_used_percent"],
+                "metrics_collection_interval": 60
+            },
+            "disk": {
+                "measurement": ["disk_used_percent"],
+                "resources": ["/"],
+                "metrics_collection_interval": 60
+            }
+        }
+    }
+}
+```
+
+**Step 4:** Start it:
+```bash
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+    -s
+```
+
+**Step 5:** Wait 2 minutes, then verify in CloudWatch Console → Metrics → CWAgent namespace.
+
+---
+
+## ⚡ Part 5: EventBridge → Lambda — Why This Exists
+
+### The Problem It Solves
+
+This is the **trigger chain**:
+```
+CPU spikes on EC2 instance
+        │
+        ▼
+CloudWatch alarm fires (it detects CPU > 80%)
+        │
+        ▼
+CloudWatch changes alarm state from OK → ALARM
+        │
+        ▼
+EventBridge catches that state change (it watches for alarm events)
+        │
+        ▼
+EventBridge invokes your Lambda function
+        │
+        ▼
+Lambda runs your Python code → Agent investigates → Notifies Teams
+```
+
+**Without EventBridge:** Nothing connects the alarm to your agent. The alarm fires, you get an email notification (if set up), and that's it. No automation.
+
+**With EventBridge:** The alarm automatically wakes up your AI agent to investigate.
+
+### The Bug That Was Fixed
+
+[infra/app.py](file:///c:/Users/pvhar/codelabs/devops-ai-agent/infra/app.py) was missing one line. It created the EventBridge rule but never told it to call the Lambda:
+
+```python
+# BEFORE (broken — alarm fires but Lambda is never called):
+agent_runner.add_dependency(monitoring)
+app.synth()
+
+# AFTER (fixed — alarm → EventBridge → Lambda):
+agent_runner.add_dependency(monitoring)
+monitoring.add_lambda_target(agent_runner.agent_fn)  # ← this line was missing
+app.synth()
+```
+
+✅ **This is already fixed in your [infra/app.py](file:///c:/Users/pvhar/codelabs/devops-ai-agent/infra/app.py) now.**
+
+---
+
+## 🚀 Part 6: CDK vs Manual — How Deployment Works
+
+### Do You Use CLI or Manual Console?
+
+**You use CLI (CDK).** That's the whole point of having an [infra/](file:///c:/Users/pvhar/codelabs/devops-ai-agent/tests/integration/test_mcp_round_trip.py#25-48) folder.
+
+Here's what CDK does automatically when you run `cdk deploy`:
+
+| What CDK Creates | Console Equivalent |
+|---|---|
+| Lambda function with your code | Console → Lambda → Create function → upload ZIP |
+| Lambda IAM role + all permissions | Console → IAM → Create role → attach 6 policies |
+| CloudWatch Alarm | Console → CloudWatch → Create alarm |
+| EventBridge Rule | Console → EventBridge → Create rule |
+| VPC + subnets + security groups | Console → VPC → Create VPC wizard |
+| CloudWatch Log group (2 week retention) | Console → CloudWatch → Log groups |
+
+**CDK saves you ~1 hour of Console clicking every time you deploy.**
+
+### How CDK Deployment Works Step by Step
+
+```bash
+# Step 1: Install CDK CLI (one time)
+npm install -g aws-cdk
+
+# Step 2: Bootstrap CDK in your account (one time per account/region)
+cdk bootstrap aws://YOUR_ACCOUNT_ID/ap-southeast-2
+
+# Step 3: Install CDK Python dependencies
+pip install -e ".[infra]"
+
+# Step 4: See what CDK will create (dry run, no changes)
+cd infra
+cdk synth
+
+# Step 5: Deploy everything
+cdk deploy --all --parameters DevOpsAgent-Monitoring:MonitoredInstanceId=i-YOUR_EC2_ID
+
+# Or deploy one stack at a time:
+cdk deploy DevOpsAgent-Networking
+cdk deploy DevOpsAgent-Monitoring
+cdk deploy DevOpsAgent-Runner
+```
+
+### The Missing Lambda Env Vars
+
+The CDK stack currently only sets 3 env vars in the Lambda. You need to add your secrets too.
+
+**Fix the CDK code** in [infra/stacks/agent_runner_stack.py](file:///c:/Users/pvhar/codelabs/devops-ai-agent/infra/stacks/agent_runner_stack.py), change lines 33–37:
+
+```python
+# CURRENT (missing important vars):
+environment={
+    "LOG_LEVEL": "INFO",
+    "LOG_FORMAT": "json",
+    "AWS_REGION_OVERRIDE": cdk.Aws.REGION,
+}
+
+# SHOULD BE:
+environment={
+    "LOG_LEVEL": "INFO",
+    "LOG_FORMAT": "json",
+    "AWS_REGION": cdk.Aws.REGION,
+    "AGENT_ID": "KYZ4EKSMX5",
+    "AGENT_ALIAS_ID": "LFVTIWMNFK",
+    "BEDROCK_MODEL_ID": "anthropic.claude-3-sonnet-20240229-v1:0",
+    # TEAMS_WEBHOOK_URL: add later
+}
+```
+
+**Or after deployment**, go to:
+```
+AWS Console → Lambda → devops-ai-agent-handler
+→ Configuration → Environment variables → Edit
+→ Add each variable manually
+```
+
+---
+
+## 📋 Part 7: Your Getting-Started Checklist (Skipping Teams)
+
+Do these **in order**. Skip steps 8–9 for now (Teams comes later).
+
+### Prerequisites (one-time setup)
+
+- [ ] **Step 1:** Configure AWS CLI
+  ```bash
+  aws configure
+  # Enter your Access Key, Secret Key, region: ap-southeast-2
+  ```
+  
+- [ ] **Step 2:** Verify it works
+  ```bash
+  aws sts get-caller-identity
+  ```
+
+- [ ] **Step 3:** Enable Bedrock model access
+  - Console → search **Bedrock** → **Model access** (left sidebar)
+  - Click **"Modify model access"**
+  - Find **Claude 3 Sonnet** → check it → **Save changes** (takes 1–2 min)
+
+### Verify Your Existing Bedrock Agent
+
+- [ ] **Step 4:** Confirm agent `KYZ4EKSMX5` exists in `ap-southeast-2`
+  ```bash
+  aws bedrock-agent get-agent --agent-id KYZ4EKSMX5 --region ap-southeast-2
+  ```
+  Look for `"agentStatus": "PREPARED"` in the output.
+
+- [ ] **Step 5:** Confirm alias `LFVTIWMNFK` is valid
+  ```bash
+  aws bedrock-agent get-agent-alias --agent-id KYZ4EKSMX5 --agent-alias-id LFVTIWMNFK --region ap-southeast-2
+  ```
+
+### Deploy to AWS
+
+- [ ] **Step 6:** Install CDK + bootstrap
+  ```bash
+  npm install -g aws-cdk
+  cdk bootstrap aws://$(aws sts get-caller-identity --query Account --output text)/ap-southeast-2
+  ```
+
+- [ ] **Step 7:** Deploy all stacks
+  ```bash
+  pip install -e ".[infra]"
+  cd infra
+  # Replace i-YOURID with your actual EC2 instance ID
+  cdk deploy --all --parameters DevOpsAgent-Monitoring:MonitoredInstanceId=i-YOURID
+  ```
+
+- [ ] **Step 8:** Add env vars to Lambda (either fix CDK or add manually in Console)
+  ```
+  AWS Console → Lambda → devops-ai-agent-handler → Configuration → Environment variables
+  Add: AGENT_ID = KYZ4EKSMX5
+  Add: AGENT_ALIAS_ID = LFVTIWMNFK
+  Add: AWS_REGION = ap-southeast-2
+  Add: BEDROCK_MODEL_ID = anthropic.claude-3-sonnet-20240229-v1:0
+  ```
+
+### Test It
+
+- [ ] **Step 9:** Test the Lambda manually (simulates an alarm firing)
+  - Console → Lambda → `devops-ai-agent-handler` → **Test**
+  - Use this test event:
+  ```json
+  {
+    "source": "aws.cloudwatch",
+    "detail-type": "CloudWatch Alarm State Change",
+    "region": "ap-southeast-2",
+    "account": "YOUR_ACCOUNT_ID",
+    "time": "2026-03-08T10:00:00Z",
+    "detail": {
+      "alarmName": "devops-agent-high-cpu",
+      "alarmDescription": "CPU > 80%",
+      "state": {"value": "ALARM", "reason": "CPU at 92%", "timestamp": "2026-03-08T10:00:00Z"},
+      "previousState": {"value": "OK", "reason": "Normal", "timestamp": "2026-03-08T09:45:00Z"},
+      "configuration": {
+        "threshold": 80.0,
+        "comparisonOperator": "GreaterThanThreshold",
+        "evaluationPeriods": 2,
+        "metrics": [{"metricStat": {"metric": {"namespace": "AWS/EC2", "name": "CPUUtilization", "dimensions": {"InstanceId": "i-YOUR_EC2_ID"}}, "period": 300}}]
+      }
+    }
+  }
+  ```
+
+- [ ] **Step 10:** Check CloudWatch Logs to see what happened
+  ```
+  Console → CloudWatch → Log groups → /aws/lambda/devops-ai-agent-handler
+  → Click most recent log stream
+  ```
+
+### Teams (add later)
+
+- [ ] **Step 11 (later):** Get Teams webhook URL and add to [.env](file:///c:/Users/pvhar/codelabs/devops-ai-agent/.env) and Lambda env vars
+
+---
+
+## 🗺️ Visual Summary
+
+```
+What you write locally:          What AWS runs:
+─────────────────────────        ─────────────────────────────────────
+src/handlers/        ──CDK──►   Lambda Function
+src/agent/           ──CDK──►   (same Python code, running in cloud)
+src/mcp_servers/     ──CDK──►
+infra/stacks/        ──CDK──►   VPC + Alarm + EventBridge Rule + IAM Role
+.env                 ──you──►   Lambda Environment Variables (set manually)
+```

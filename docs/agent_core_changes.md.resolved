@@ -1,0 +1,159 @@
+# agent_core.py — Changes Walkthrough
+
+## Before vs After
+
+The old file was **174 lines** with a placeholder reasoning loop. The new file is **362 lines** with a fully implemented Bedrock integration.
+
+### What Was Removed
+
+The old [_handle_reasoning_loop()](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#113-243) was a stub that returned a hard-coded string:
+
+```python
+# OLD — just a placeholder message
+async def _handle_reasoning_loop(self, prompt, trace):
+    tool_defs = self._mcp.get_tools_for_agent()
+    return (
+        f"[DevOps Agent] Received prompt and ready to reason with "
+        f"{len(tool_defs)} available tools..."
+    )
+```
+
+---
+
+## What Was Added — 6 Key Changes
+
+### 1. Dual-Mode Invocation (Registered vs Inline Agent)
+
+```python
+# Line 130 — decides which Bedrock API to call
+use_registered_agent = bool(settings.agent_id and settings.agent_alias_id)
+```
+
+- **Registered agent** (`invoke_agent`) — If you've pre-registered the agent in Bedrock Console with `AGENT_ID` + `AGENT_ALIAS_ID`, it uses those.
+- **Inline agent** (`invoke_inline_agent`) — If those aren't set, it sends the full tool definitions + system prompt directly. This is great for development — **no Bedrock Console setup needed**.
+
+---
+
+### 2. The Real Reasoning Loop ([lines 142–242](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#L142-L242))
+
+```mermaid
+flowchart TD
+    A[Turn 1: Send prompt to Bedrock] --> B{Process event stream}
+    B --> C[chunk event → collect text]
+    B --> D[returnControl event → collect tool calls]
+    B --> E[trace event → log observability]
+    D --> F{Any pending tool calls?}
+    F -- Yes --> G[Execute each via MCP client]
+    G --> H[Package results as returnControlInvocationResults]
+    H --> I[Turn N+1: Send results back to Bedrock]
+    I --> B
+    F -- No --> J[✅ Done — return final text]
+    C --> F
+```
+
+The loop runs up to `max_reasoning_turns` (default 10). Each iteration:
+
+1. **Builds request kwargs** → calls Bedrock
+2. **Iterates over the event stream** → collects text chunks, tool calls, and traces
+3. **If tool calls found** → executes them via MCP → packages results → loops back
+4. **If no tool calls** → model is done reasoning → break and return
+
+---
+
+### 3. Event Stream Processing ([lines 168–202](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#L168-L202))
+
+The Bedrock `invoke_agent()` API returns a **streaming response** with three event types:
+
+| Event Type | What It Contains | How It's Handled |
+|---|---|---|
+| `chunk` | Text output from the model | Decoded from bytes → appended to `response_parts` |
+| `returnControl` | Tool call requests (function name, params) | Parsed → added to `pending_tool_calls` list |
+| `trace` | Observability data (reasoning steps) | Appended to the trace list for debugging |
+
+The `returnControl` parsing extracts:
+- **Tool name** (`function`)
+- **Parameters** (converted from Bedrock's `{name, value, type}` format to a plain dict)
+- **Invocation ID** (used to match results back to the correct request)
+
+---
+
+### 4. MCP Tool Execution & Result Packaging ([lines 209–234](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#L209-L234))
+
+```python
+# For each tool call requested by Bedrock:
+result = await self._mcp.call_tool(tc["tool"], tc["arguments"])
+
+# Package the result in Bedrock's expected format:
+return_control_results.append({
+    "functionResult": {
+        "actionGroup": tc["action_group"],
+        "function": tc["tool"],
+        "actionInvocationId": tc["invocation_id"],
+        "responseBody": {
+            "TEXT": {"body": result_body}
+        },
+    }
+})
+```
+
+The results are sent back to Bedrock via `sessionState.returnControlInvocationResults` on the next turn.
+
+---
+
+### 5. Action Group Builder ([lines 280–314](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#L280-L314))
+
+This is needed for **inline agent mode**. It converts MCP tool definitions into Bedrock's action group format:
+
+```
+MCP Tool Schema                    →    Bedrock Action Group
+─────────────────                       ────────────────────
+{name, description, input_schema}  →    {actionGroupName: "MCPTools",
+                                         actionGroupExecutor: {customControl: "RETURN_CONTROL"},
+                                         functionSchema: {functions: [...]}}
+```
+
+Key detail: `RETURN_CONTROL` tells Bedrock "don't try to execute tools yourself — send them back to me so I can route them through MCP."
+
+---
+
+### 6. Helper Functions ([lines 329–361](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#L329-L361))
+
+Two new module-level helpers:
+
+- **[_map_json_type_to_bedrock()](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#329-340)** — Converts JSON Schema types (`string`, `integer`, `array`, `object`) to Bedrock's parameter type system. Note: `object` maps to `string` because complex objects get serialized as JSON strings.
+
+- **[_cast_parameter()](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/agent/agent_core.py#342-362)** — Bedrock sends all parameter values as strings. This casts them back to the correct Python types (`int`, `float`, `bool`, [list](file:///c:/Users/pvhar/codelabs/devops-ai-agent/src/mcp_servers/monitoring/server.py#119-122)/`dict` via `json.loads`).
+
+---
+
+## Overall Flow Summary
+
+```
+┌────────────────────────────────────────────────────────┐
+│                    DevOpsAgent.invoke()                 │
+│                                                        │
+│  1. Build kwargs (prompt, tools, session)               │
+│  2. Call Bedrock invoke_agent / invoke_inline_agent     │
+│  3. Iterate event stream:                              │
+│     ├── chunk → collect response text                  │
+│     ├── returnControl → extract tool call requests     │
+│     └── trace → log for observability                  │
+│  4. If tool calls requested:                           │
+│     ├── Execute each via self._mcp.call_tool()         │
+│     ├── Package results as functionResults             │
+│     └── Loop back to step 2 (next turn)               │
+│  5. If no tool calls → reasoning complete              │
+│  6. Return {response, tool_calls, turns}               │
+└────────────────────────────────────────────────────────┘
+```
+
+## Verdict: ✅ Implementation Looks Correct
+
+The changes properly implement:
+- ✅ `invoke_agent()` / `invoke_inline_agent()` call against Bedrock SDK
+- ✅ Event stream iteration (`chunk`, `returnControl`, `trace`)
+- ✅ `toolUse` interception via `returnControl` events
+- ✅ Routing tool calls through `self._mcp.call_tool()`
+- ✅ Feeding results back via `sessionState.returnControlInvocationResults`
+- ✅ Multi-turn loop with max turn guard
+- ✅ Async wrapping of sync boto3 calls via `asyncio.to_thread()`

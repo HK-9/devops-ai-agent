@@ -1,0 +1,39 @@
+{
+  "source": "aws.cloudwatch",
+  "detail-type": "CloudWatch Alarm State Change",
+  "region": "ap-southeast-2",
+  "account": "650251690796",
+  "time": "2026-03-08T10:00:00Z",
+  "resources": ["arn:aws:cloudwatch:ap-southeast-2:650251690796:alarm:devops-agent-high-cpu"],
+  "detail": {
+    "alarmName": "devops-agent-high-cpu",
+    "alarmDescription": "CPU utilization exceeds 80%",
+    "state": {
+      "value": "ALARM",
+      "reason": "Threshold Crossed: 1 out of 2 datapoints [92.35] was greater than the threshold (80.0).",
+      "timestamp": "2026-03-08T10:00:00.000+0000"
+    },
+    "previousState": {
+      "value": "OK",
+      "reason": "All datapoints within threshold.",
+      "timestamp": "2026-03-08T09:45:00.000+0000"
+    },
+    "configuration": {
+      "threshold": 80.0,
+      "comparisonOperator": "GreaterThanThreshold",
+      "evaluationPeriods": 2,
+      "metrics": [{
+        "id": "cpu",
+        "metricStat": {
+          "metric": {
+            "namespace": "AWS/EC2",
+            "name": "CPUUtilization",
+            "dimensions": {"InstanceId": "i-0bf11b006e8f12844"}
+          },
+          "period": 300,
+          "stat": "Average"
+        }
+      }]
+    }
+  }
+}
