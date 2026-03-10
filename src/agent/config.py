@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     aws_profile: str | None = None  # Use default credential chain if None
 
     # ── Bedrock / AgentCore ──────────────────────────────────────────────
-    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v1:0"
     agent_id: str | None = None  # Set after registering with AgentCore
     agent_alias_id: str | None = None
 
@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # ── SNS ──────────────────────────────────────────────────────────────
     sns_topic_arn: str = ""
 
+    alert_email: str = ""
     # ── Timeouts & Limits ────────────────────────────────────────────────
     tool_timeout_seconds: int = 30
     lambda_timeout_seconds: int = 300
@@ -43,6 +44,11 @@ class Settings(BaseSettings):
     # ── Logging ──────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "json"  # "json" | "text"
+
+    # ── Web ──────────────────────────────────────────────────────────────
+    web_host: str = "0.0.0.0"
+    web_port: int = 5001
+    web_debug: bool = True
 
     model_config = {
         "env_prefix": "",

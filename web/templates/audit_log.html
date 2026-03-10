@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Audit Log — Incident Response Agent{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h2 class="text-2xl font-bold text-white">📜 Audit Log</h2>
+        <p class="text-gray-400 text-sm mt-1">Complete history of every agent action with reasoning and outcomes.</p>
+    </div>
+    <div class="flex space-x-3">
+        <select id="filter-phase" onchange="filterLogs()" class="bg-gray-800 text-gray-300 border border-gray-600 rounded-md px-3 py-1.5 text-sm">
+            <option value="">All Phases</option>
+            <option value="triage">Triage</option>
+            <option value="diagnosis">Diagnosis</option>
+            <option value="remediation">Remediation</option>
+            <option value="verification">Verification</option>
+            <option value="escalation">Escalation</option>
+        </select>
+        <select id="filter-result" onchange="filterLogs()" class="bg-gray-800 text-gray-300 border border-gray-600 rounded-md px-3 py-1.5 text-sm">
+            <option value="">All Results</option>
+            <option value="SUCCESS">Success</option>
+            <option value="BLOCKED">Blocked</option>
+            <option value="ESCALATED">Escalated</option>
+            <option value="REJECTED">Rejected</option>
+            <option value="RESOLVED">Resolved</option>
+            <option value="ACTIVE">Active</option>
+        </select>
+        <button onclick="refreshLogs()" class="bg-gray-700 hover:bg-gray-600 text-gray-300 px-4 py-1.5 rounded-md text-sm transition">🔄 Refresh</button>
+    </div>
+</div>
+
+<div class="space-y-3" id="log-entries">
+    {% for log in logs | reverse %}
+    <div class="log-entry bg-gray-800 rounded-lg border border-gray-700 p-4 hover:border-gray-600 transition" data-phase="{{ log.phase | default('') }}" data-result="{{ log.result | default('') }}">
+        <div class="flex items-start justify-between">
+            <div class="flex items-center space-x-3">
+                {% set phase = log.phase | default('unknown') %}
+                {% if phase == 'triage' %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-900 text-blue-300">🔍 Triage</span>
+                {% elif phase == 'diagnosis' %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-900 text-purple-300">🔬 Diagnosis</span>
+                {% elif phase == 'remediation' %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-900 text-orange-300">🔧 Remediation</span>
+                {% elif phase == 'verification' %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-900 text-green-300">✅ Verification</span>
+                {% elif phase == 'escalation' %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-900 text-yellow-300">⚠️ Escalation</span>
+                {% else %}
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-700 text-gray-300">{{ phase }}</span>
+                {% endif %}
+
+                {% set result = log.result | default('') %}
+                {% if result == 'SUCCESS' or result == 'RESOLVED' %}
+                    <span class="text-green-400 text-xs font-medium">{{ result }}</span>
+                {% elif result == 'BLOCKED' or result == 'REJECTED' %}
+                    <span class="text-red-400 text-xs font-medium">{{ result }}</span>
+                {% elif result == 'ESCALATED' %}
+                    <span class="text-yellow-400 text-xs font-medium">{{ result }}</span>
+                {% else %}
+                    <span class="text-gray-400 text-xs font-medium">{{ result }}</span>
+                {% endif %}
+
+                <span class="text-blue-400 text-xs font-mono">{{ log.incident_id | default('—') }}</span>
+            </div>
+            <span class="text-gray-500 text-xs">{{ log.timestamp | default('—') }}</span>
+        </div>
+        <div class="mt-2">
+            <div class="flex items-center space-x-4 text-xs text-gray-400 flex-wrap gap-y-1">
+                <span>Action: <span class="text-gray-300">{{ log.action | default('—') }}</span></span>
+                <span>Instance: <span class="text-gray-300 font-mono">{{ log.instance_id | default('—') }}</span></span>
+                {% if log.guardrail_check %}
+                    <span>Guardrail:
+                        {% if log.guardrail_check == 'PASSED' %}
+                            <span class="text-green-400">{{ log.guardrail_check }}</span>
+                        {% else %}
+                            <span class="text-red-400">{{ log.guardrail_check }}</span>
+                        {% endif %}
+                    </span>
+                {% endif %}
+            </div>
+            {% if log.reasoning %}
+            <p class="mt-2 text-sm text-gray-400 bg-gray-900 rounded px-3 py-2">💭 {{ log.reasoning[:300] }}{% if log.reasoning | length > 300 %}...{% endif %}</p>
+            {% endif %}
+        </div>
+    </div>
+    {% else %}
+    <div class="text-center py-12 text-gray-500">
+        <p class="text-lg">No audit log entries yet.</p>
+        <p class="text-sm mt-1">Trigger an alert from the Dashboard to see agent actions logged here.</p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+function filterLogs() {
+    const phaseFilter = document.getElementById('filter-phase').value;
+    const resultFilter = document.getElementById('filter-result').value;
+    const entries = document.querySelectorAll('.log-entry');
+
+    entries.forEach(entry => {
+        const phase = entry.dataset.phase;
+        const result = entry.dataset.result;
+        const phaseMatch = !phaseFilter || phase === phaseFilter;
+        const resultMatch = !resultFilter || result === resultFilter;
+        entry.style.display = (phaseMatch && resultMatch) ? '' : 'none';
+    });
+}
+
+async function refreshLogs() {
+    location.reload();
+}
+</script>
+{% endblock %}
