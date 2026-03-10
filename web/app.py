@@ -1,9 +1,26 @@
 """Flask application for the DevOps AI Agent Web UI."""
 
 import logging
-from flask import Flask
+import os
+from pathlib import Path
 
-from src.agent.config import settings
+# Force-load .env BEFORE any settings import so .env values
+# override stale shell environment variables.
+_env_file = Path(__file__).resolve().parent.parent / ".env"
+if _env_file.exists():
+    for line in _env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            os.environ[key.strip()] = value.strip()
+
+# Remove AGENT_ID / AGENT_ALIAS_ID so inline mode is always used
+os.environ.pop("AGENT_ID", None)
+os.environ.pop("AGENT_ALIAS_ID", None)
+
+from flask import Flask  # noqa: E402
+
+from src.agent.config import settings  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
