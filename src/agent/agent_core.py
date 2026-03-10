@@ -67,6 +67,19 @@ class DevOpsAgent:
         )
         logger.info("AgentCore client initialised (model=%s)", settings.bedrock_model_id)
 
+        from src.utils.aws_helpers import get_client
+
+        # after bedrock client creation
+        sts = get_client("sts")
+        identity = await asyncio.to_thread(sts.get_caller_identity)
+        logger.info("Running as AWS identity: %s", identity)
+        logger.info(
+            "Using profile=%s region=%s model=%s",
+            settings.aws_profile,
+            settings.aws_region,
+            settings.bedrock_model_id,
+        )
+
     async def shutdown(self) -> None:
         """Disconnect from all MCP servers."""
         await self._mcp.disconnect_all()
@@ -126,7 +139,9 @@ class DevOpsAgent:
         Returns:
             A tuple of (response_text, turn_count).
         """
-        tool_defs = self._mcp.get_tools_for_agent()
+        # tool_defs = self._mcp.get_tools_for_agent()
+        all_tools = self._mcp.get_tools_for_agent()
+        tool_defs = [t for t in all_tools if t["name"] == "list_ec2_instances"]
         # Always use inline agent mode — invoke_agent requires separate
         # IAM permissions that are not configured for this deployment.
         use_registered_agent = False
@@ -153,9 +168,13 @@ class DevOpsAgent:
                 use_registered_agent=use_registered_agent,
                 return_control_invocation_id=return_control_invocation_id,
             )
-
+            logger.info(
+    "ACTION GROUPS PAYLOAD: %s",
+    json.dumps(invoke_kwargs.get("actionGroups", []), indent=2)
+)
             # ── Call Bedrock (sync SDK → thread) ─────────────────────
             if use_registered_agent:
+                
                 response = await asyncio.to_thread(
                     self._bedrock_client.invoke_agent, **invoke_kwargs
                 )
