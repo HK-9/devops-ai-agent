@@ -127,10 +127,11 @@ class DevOpsAgent:
             A tuple of (response_text, turn_count).
         """
         tool_defs = self._mcp.get_tools_for_agent()
-        use_registered_agent = bool(settings.agent_id and settings.agent_alias_id)
+        # Always use inline agent mode — invoke_agent requires separate
+        # IAM permissions that are not configured for this deployment.
+        use_registered_agent = False
         logger.info(
-            "Starting reasoning loop (%s) with %d tools: %s",
-            "registered agent" if use_registered_agent else "inline agent",
+            "Starting reasoning loop (inline agent) with %d tools: %s",
             len(tool_defs),
             [t["name"] for t in tool_defs],
         )

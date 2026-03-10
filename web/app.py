@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 
 # Force-load .env BEFORE any settings import so .env values
-# override stale shell environment variables.
 _env_file = Path(__file__).resolve().parent.parent / ".env"
 if _env_file.exists():
     for line in _env_file.read_text().splitlines():
@@ -14,7 +13,6 @@ if _env_file.exists():
             key, _, value = line.partition("=")
             os.environ[key.strip()] = value.strip()
 
-# Remove AGENT_ID / AGENT_ALIAS_ID so inline mode is always used
 os.environ.pop("AGENT_ID", None)
 os.environ.pop("AGENT_ALIAS_ID", None)
 

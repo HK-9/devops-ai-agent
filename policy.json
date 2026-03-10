@@ -1,0 +1,1 @@
+{"Version":"2012-10-17","Statement":[{"Sid":"BedrockAgentRuntimeAccess","Effect":"Allow","Action":["bedrock:InvokeAgent","bedrock:InvokeInlineAgent","bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],"Resource":"*"}]}
