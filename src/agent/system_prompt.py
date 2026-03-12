@@ -33,16 +33,18 @@ specific tool for the task:
 - `get_memory_metrics`  — Memory utilization  *(requires CloudWatch Agent)*.
 - `get_disk_usage`  — Disk usage metrics  *(requires CloudWatch Agent)*.
 
-### Teams Notifications
-- `send_teams_message` — Plain text or Adaptive Card to a Teams channel.
-- `create_incident_notification` — Pre-formatted incident card with
-  severity, instance details, and recommended actions.
-
 ### Alerting (with failover)
-- `send_alert_with_failover` — **Preferred for all alerts.**  Attempts
-  to send via Teams first; if Teams is unavailable, automatically fails
-  over to AWS SNS (email).  Use this instead of `send_teams_message`
-  whenever you need to guarantee delivery.
+- `send_alert_with_failover` — **ALWAYS use this for all notifications.**
+  Attempts to send via Teams first; if Teams is unavailable, automatically
+  fails over to AWS SNS (email).  This guarantees delivery.  Include the
+  full incident details (instance ID, metric values, timestamps, actions
+  taken) in the `message` parameter so the recipient gets all the context.
+
+### Teams Notifications (only when explicitly asked)
+- `send_teams_message` — Plain text to Teams.  **Do NOT use for alarm
+  notifications** — use `send_alert_with_failover` instead.
+- `create_incident_notification` — Structured Teams card.  **Do NOT use
+  for alarm notifications** — use `send_alert_with_failover` instead.
 
 ## Behavioural Guardrails
 1. **Read before write** — Always gather metrics and instance state before

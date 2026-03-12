@@ -35,14 +35,20 @@ class Settings(BaseSettings):
     # ── SNS ──────────────────────────────────────────────────────────────
     sns_topic_arn: str = ""
 
+    alert_email: str = ""
     # ── Timeouts & Limits ────────────────────────────────────────────────
     tool_timeout_seconds: int = 30
     lambda_timeout_seconds: int = 300
-    max_reasoning_turns: int = 10
+    max_reasoning_turns: int = 15
 
     # ── Logging ──────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_format: str = "json"  # "json" | "text"
+
+    # ── Web ──────────────────────────────────────────────────────────────
+    web_host: str = "0.0.0.0"
+    web_port: int = 5001
+    web_debug: bool = True
 
     model_config = {
         "env_prefix": "",

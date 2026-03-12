@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Incident Response Agent{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: { 50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 800: '#1e40af', 900: '#1e3a8a' },
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .pulse-dot { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .status-resolved { color: #22c55e; }
+        .status-escalated { color: #f59e0b; }
+        .status-rejected { color: #ef4444; }
+        .status-active { color: #3b82f6; }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body class="h-full dark text-white bg-slate-950">
+    <div class="min-h-full">
+        <nav class="bg-gray-800 border-b border-gray-700">
+            <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+                <div class="flex h-16 items-center justify-between">
+                    <div class="flex items-center">
+                        <span class="text-2xl mr-2">🚨</span>
+                        <span class="text-white font-bold text-lg">Incident Response Agent</span>
+                    </div>
+                    <div class="flex space-x-4">
+                        <a href="/" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/' %}bg-gray-900 text-white{% endif %}">Dashboard</a>
+                        <a href="/chat" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/chat' %}bg-gray-900 text-white{% endif %}">Chat</a>
+                        <a href="/audit" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/audit' %}bg-gray-900 text-white{% endif %}">Audit Log</a>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <span class="pulse-dot inline-block w-2 h-2 bg-green-400 rounded-full"></span>
+                        <span class="text-green-400 text-sm">Agent Online</span>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <main>
+            <div class="mx-auto max-w-7xl py-6 px-4 sm:px-6 lg:px-8">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

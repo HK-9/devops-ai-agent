@@ -67,6 +67,19 @@ class DevOpsAgent:
         )
         logger.info("AgentCore client initialised (model=%s)", settings.bedrock_model_id)
 
+        from src.utils.aws_helpers import get_client
+
+        # after bedrock client creation
+        sts = get_client("sts")
+        identity = await asyncio.to_thread(sts.get_caller_identity)
+        logger.info("Running as AWS identity: %s", identity)
+        logger.info(
+            "Using profile=%s region=%s model=%s",
+            settings.aws_profile,
+            settings.aws_region,
+            settings.bedrock_model_id,
+        )
+
     async def shutdown(self) -> None:
         """Disconnect from all MCP servers."""
         await self._mcp.disconnect_all()
@@ -74,7 +87,7 @@ class DevOpsAgent:
 
     # ── Invocation ───────────────────────────────────────────────────────
 
-    async def invoke(self, prompt: str, session_id: str | None = None) -> dict[str, Any]:
+    async def invoke(self, prompt: str, session_id: str | None = None, *, is_alarm: bool = False) -> dict[str, Any]:
         """Invoke the agent with a natural-language prompt.
 
         This method sends the prompt to Bedrock AgentCore, which manages
@@ -85,6 +98,8 @@ class DevOpsAgent:
         Args:
             prompt:     Natural-language instruction for the agent.
             session_id: Optional session ID for conversation continuity.
+            is_alarm:   If True, exclude list_ec2_instances to prevent
+                        Nova Lite from looping on it.
 
         Returns:
             Dict with ``response`` text and ``tool_calls`` trace.
@@ -98,7 +113,7 @@ class DevOpsAgent:
 
         try:
             sid = session_id or str(uuid.uuid4())
-            response_text, turns = await self._handle_reasoning_loop(prompt, sid, tool_calls_trace)
+            response_text, turns = await self._handle_reasoning_loop(prompt, sid, tool_calls_trace, is_alarm=is_alarm)
 
             return {
                 "response": response_text,
@@ -115,6 +130,8 @@ class DevOpsAgent:
         prompt: str,
         session_id: str,
         trace: list[dict[str, Any]],
+        *,
+        is_alarm: bool = False,
     ) -> tuple[str, int]:
         """Execute the Bedrock reasoning loop, bridging tool calls to MCP.
 
@@ -127,10 +144,15 @@ class DevOpsAgent:
             A tuple of (response_text, turn_count).
         """
         tool_defs = self._mcp.get_tools_for_agent()
-        use_registered_agent = bool(settings.agent_id and settings.agent_alias_id)
+        if is_alarm:
+            # Exclude list_ec2_instances for alarm flows — Nova Lite loops
+            # on it instead of following step-by-step instructions.
+            tool_defs = [t for t in tool_defs if t["name"] != "list_ec2_instances"]
+        # Always use inline agent mode — invoke_agent requires separate
+        # IAM permissions that are not configured for this deployment.
+        use_registered_agent = False
         logger.info(
-            "Starting reasoning loop (%s) with %d tools: %s",
-            "registered agent" if use_registered_agent else "inline agent",
+            "Starting reasoning loop (inline agent) with %d tools: %s",
             len(tool_defs),
             [t["name"] for t in tool_defs],
         )
@@ -152,9 +174,9 @@ class DevOpsAgent:
                 use_registered_agent=use_registered_agent,
                 return_control_invocation_id=return_control_invocation_id,
             )
-
             # ── Call Bedrock (sync SDK → thread) ─────────────────────
             if use_registered_agent:
+                
                 response = await asyncio.to_thread(
                     self._bedrock_client.invoke_agent, **invoke_kwargs
                 )

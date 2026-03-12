@@ -43,7 +43,7 @@ def setup_logging(name: str = "devops-agent") -> logging.Logger:
     logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
 
     if not logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
+        handler = logging.StreamHandler(sys.stderr)
         if settings.log_format == "json":
             handler.setFormatter(JSONFormatter())
         else:

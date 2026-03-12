@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}Chat — Incident Response Agent{% endblock %}
+
+{% block content %}
+<div class="flex flex-col h-[calc(100vh-12rem)]">
+    <div class="bg-gray-800 rounded-t-lg border border-gray-700 px-6 py-4">
+        <h2 class="text-xl font-bold text-white">💬 Agent Chat</h2>
+        <p class="text-gray-400 text-sm mt-1">
+            Interact with the incident response agent. Ask questions, trigger investigations, or review actions.
+        </p>
+    </div>
+
+    <div id="chat-messages" class="flex-1 border-x border-gray-700 p-6 overflow-y-auto space-y-4" style="background-color: #1a1d23;">
+        <div class="flex items-start space-x-3">
+            <div class="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0">🤖</div>
+            <div class="bg-gray-800 rounded-lg px-4 py-3 max-w-2xl border border-gray-700">
+                <p class="text-gray-300 text-sm">Hello! I'm the Infrastructure Incident Response Agent. I can help you:</p>
+                <ul class="text-gray-400 text-sm mt-2 space-y-1 list-disc list-inside">
+                    <li>Investigate infrastructure issues on managed instances</li>
+                    <li>Check EC2 instance state and metrics</li>
+                    <li>Explain tool results and agent actions</li>
+                    <li>Trigger investigations using natural language</li>
+                </ul>
+                <p class="text-gray-400 text-sm mt-2">
+                    Try: <em class="text-blue-400">"Investigate high CPU on i-0abc123"</em>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 border-x border-gray-700 px-6 py-2 flex gap-2 flex-wrap">
+        <button onclick="sendQuick('What tools do you currently have available?')" class="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded-full text-xs transition">🧰 Available Tools</button>
+        <button onclick="sendQuick('Investigate high CPU on i-0abc123def456')" class="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded-full text-xs transition">🔥 Investigate CPU</button>
+        <button onclick="sendQuick('Check the current health of EC2 instance i-0abc123def456')" class="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded-full text-xs transition">🩺 Check Health</button>
+        <button onclick="sendQuick('Summarize the most likely causes of a memory exhaustion alert')" class="bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded-full text-xs transition">🧠 Explain Memory Alert</button>
+    </div>
+
+    <div class="bg-gray-800 rounded-b-lg border border-gray-700 px-6 py-4">
+        <form id="chat-form" class="flex space-x-3">
+            <input type="text" id="chat-input" placeholder="Type a message..." class="flex-1 bg-gray-900 text-white border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" autocomplete="off">
+            <button type="submit" id="send-btn" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">Send</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const chatMessages = document.getElementById('chat-messages');
+const chatForm = document.getElementById('chat-form');
+const chatInput = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
+
+function addMessage(role, content) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex items-start space-x-3';
+
+    if (role === 'user') {
+        wrapper.className += ' flex-row-reverse space-x-reverse';
+    }
+
+    const avatar = document.createElement('div');
+    avatar.className = `w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0 ${
+        role === 'user' ? 'bg-green-600' : 'bg-blue-600'
+    }`;
+    avatar.textContent = role === 'user' ? '👤' : '🤖';
+
+    const bubble = document.createElement('div');
+    bubble.className = `rounded-lg px-4 py-3 max-w-2xl border ${
+        role === 'user'
+            ? 'bg-blue-900 border-blue-800 text-blue-100'
+            : 'bg-gray-800 border-gray-700 text-gray-300'
+    }`;
+
+    const text = document.createElement('p');
+    text.className = 'text-sm whitespace-pre-wrap';
+    text.textContent = content;
+    bubble.appendChild(text);
+
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(bubble);
+    chatMessages.appendChild(wrapper);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function addLoading() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex items-start space-x-3';
+    wrapper.id = 'loading-indicator';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white text-sm font-bold flex-shrink-0';
+    avatar.textContent = '🤖';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bg-gray-800 rounded-lg px-4 py-3 border border-gray-700';
+    bubble.innerHTML = '<div class="flex space-x-1"><div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style="animation-delay: 0ms"></div><div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style="animation-delay: 150ms"></div><div class="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style="animation-delay: 300ms"></div></div>';
+
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(bubble);
+    chatMessages.appendChild(wrapper);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function removeLoading() {
+    const el = document.getElementById('loading-indicator');
+    if (el) el.remove();
+}
+
+async function sendMessage(message) {
+    if (!message.trim()) return;
+
+    addMessage('user', message);
+    chatInput.value = '';
+    sendBtn.disabled = true;
+    addLoading();
+
+    try {
+        const response = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+        });
+        const data = await response.json();
+        removeLoading();
+
+        if (data.error) {
+            addMessage('agent', `Error: ${data.error}`);
+        } else {
+            addMessage('agent', data.response);
+        }
+    } catch (err) {
+        removeLoading();
+        addMessage('agent', `Connection error: ${err.message}`);
+    }
+
+    sendBtn.disabled = false;
+    chatInput.focus();
+}
+
+function sendQuick(message) {
+    chatInput.value = message;
+    sendMessage(message);
+}
+
+chatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendMessage(chatInput.value);
+});
+
+chatInput.focus();
+</script>
+{% endblock %}

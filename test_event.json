@@ -21,7 +21,7 @@
     "configuration": {
       "threshold": 80.0,
       "comparisonOperator": "GreaterThanThreshold",
-      "evaluationPeriods": 2,
+      "evaluationPeriods": 1,
       "metrics": [{
         "id": "cpu",
         "metricStat": {
