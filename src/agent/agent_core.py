@@ -141,7 +141,10 @@ class DevOpsAgent:
         """
         # tool_defs = self._mcp.get_tools_for_agent()
         all_tools = self._mcp.get_tools_for_agent()
-        tool_defs = [t for t in all_tools if t["name"] == "list_ec2_instances"]
+        # Exclude list_ec2_instances — Nova Lite loops on it instead of
+        # following step-by-step instructions.  The alarm prompt already
+        # provides the instance ID, so listing is unnecessary.
+        tool_defs = [t for t in all_tools if t["name"] != "list_ec2_instances"]
         # Always use inline agent mode — invoke_agent requires separate
         # IAM permissions that are not configured for this deployment.
         use_registered_agent = False
@@ -168,10 +171,6 @@ class DevOpsAgent:
                 use_registered_agent=use_registered_agent,
                 return_control_invocation_id=return_control_invocation_id,
             )
-            logger.info(
-    "ACTION GROUPS PAYLOAD: %s",
-    json.dumps(invoke_kwargs.get("actionGroups", []), indent=2)
-)
             # ── Call Bedrock (sync SDK → thread) ─────────────────────
             if use_registered_agent:
                 
