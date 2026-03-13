@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     aws_profile: str | None = None  # Use default credential chain if None
 
     # ── Bedrock / AgentCore ──────────────────────────────────────────────
-    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    bedrock_model_id: str = "anthropic.claude-3-5-sonnet-20241022-v1:0"
     agent_id: str | None = None  # Set after registering with AgentCore
     agent_alias_id: str | None = None
 
