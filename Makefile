@@ -1,6 +1,6 @@
 .PHONY: help install lint format typecheck test test-unit test-integration \
        run-mcp-aws run-mcp-monitoring run-mcp-teams clean \
-       commit bump changelog hooks check
+       commit bump changelog hooks check lint-staged
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -50,8 +50,16 @@ clean: ## Remove caches and build artifacts
 hooks: ## Install pre-commit git hooks (run once after clone)
 	pre-commit install
 
-commit: ## Interactive conventional commit (guided prompt)
-	cz commit
+lint-staged: ## Run pre-commit hooks on staged files
+	@echo ">>> Running pre-commit checks on staged files..."
+	@pre-commit run || { echo ""; echo ">>> Files were auto-fixed. Run: git add . && make commit"; exit 1; }
+	@echo ">>> All checks passed!"
+
+commit: lint-staged ## Lint, format, then interactive commit
+	@echo ""
+	@echo ">>> Opening commit prompt..."
+	@echo ""
+	@set "SKIP=trailing-whitespace,end-of-file-fixer,check-yaml,check-added-large-files,check-merge-conflict,ruff,ruff-format" && cz commit
 
 bump: ## Bump version, update changelog, create git tag
 	cz bump

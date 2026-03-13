@@ -105,38 +105,38 @@ changelog_pattern = "^(feat|fix|refactor|perf|docs|test|ci|build|chore|style|rev
 [[tool.commitizen.customize.questions]]
 type = "list"
 name = "change_type"
-message = "Select the type of change:\n"
+message = "🔀 Select the type of change:\n"
 choices = [
-    { value = "feat",     name = "feat:     A new feature" },
-    { value = "fix",      name = "fix:      A bug fix" },
-    { value = "refactor", name = "refactor: Code restructuring (no feature/fix)" },
-    { value = "docs",     name = "docs:     Documentation only" },
-    { value = "test",     name = "test:     Adding or updating tests" },
-    { value = "ci",       name = "ci:       CI/CD pipeline changes" },
-    { value = "build",    name = "build:    Build system or dependencies" },
-    { value = "chore",    name = "chore:    Maintenance (no prod code change)" },
-    { value = "perf",     name = "perf:     Performance improvement" },
-    { value = "style",    name = "style:    Formatting, whitespace, etc." },
-    { value = "revert",   name = "revert:   Revert a previous commit" },
+    { value = "feat",     name = "✨ feat:     A new feature" },
+    { value = "fix",      name = "🐛 fix:      A bug fix" },
+    { value = "refactor", name = "♻️  refactor: Code restructuring (no feature/fix)" },
+    { value = "docs",     name = "📝 docs:     Documentation only" },
+    { value = "test",     name = "✅ test:     Adding or updating tests" },
+    { value = "ci",       name = "👷 ci:       CI/CD pipeline changes" },
+    { value = "build",    name = "📦 build:    Build system or dependencies" },
+    { value = "chore",    name = "🔧 chore:    Maintenance (no prod code change)" },
+    { value = "perf",     name = "⚡ perf:     Performance improvement" },
+    { value = "style",    name = "🎨 style:    Formatting, whitespace, etc." },
+    { value = "revert",   name = "⏪ revert:   Revert a previous commit" },
 ]
 
 [[tool.commitizen.customize.questions]]
 type = "list"
 name = "scope"
-message = "Scope (area of change):\n"
+message = "📂 Scope (area of change):\n"
 choices = [
-    { value = "",       name = "(none) — skip scope" },
-    { value = "agent",  name = "agent   — agent core / system prompt" },
-    { value = "mcp",    name = "mcp     — MCP servers & client" },
-    { value = "infra",  name = "infra   — CDK stacks & cloud infra" },
-    { value = "web",    name = "web     — Flask UI & routes" },
-    { value = "tests",  name = "tests   — test suite" },
-    { value = "ci",     name = "ci      — GitHub Actions / CI pipeline" },
-    { value = "deps",   name = "deps    — dependency updates" },
-    { value = "stack",   name = "stack    — Full application stack" },
+    { value = "",       name = "⏭️  (none)  — skip scope" },
+    { value = "agent",  name = "🤖 agent  — agent core / system prompt" },
+    { value = "mcp",    name = "🔌 mcp    — MCP servers & client" },
+    { value = "infra",  name = "☁️  infra  — CDK stacks & cloud infra" },
+    { value = "web",    name = "🌐 web    — Flask UI & routes" },
+    { value = "tests",  name = "🧪 tests  — test suite" },
+    { value = "ci",     name = "👷 ci     — GitHub Actions / CI pipeline" },
+    { value = "deps",   name = "📦 deps   — dependency updates" },
+    { value = "stack",  name = "🏗️  stack  — Full application stack" },
 ]
 
 [[tool.commitizen.customize.questions]]
 type = "input"
 name = "message"
-message = "Short description (imperative, lowercase, no period):\n"
+message = "✏️  Short description (imperative, lowercase, no period):\n"
