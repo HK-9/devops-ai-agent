@@ -52,7 +52,7 @@ async def send_alert_with_failover(subject: str, message: str) -> dict[str, Any]
                 "channel": "teams",
                 "status": "Alert sent to Teams successfully.",
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Teams delivery failed (%s), attempting SNS failover …", exc)
     else:
         logger.warning("TEAMS_WEBHOOK_URL not set, attempting SNS failover …")
@@ -60,7 +60,7 @@ async def send_alert_with_failover(subject: str, message: str) -> dict[str, Any]
     # ── Failover: SNS ────────────────────────────────────────────────
     sns_topic_arn = os.environ.get("SNS_TOPIC_ARN", "").strip()
     if not sns_topic_arn:
-        logger.error("SNS_TOPIC_ARN not set – both channels unavailable")
+        logger.error("SNS_TOPIC_ARN not set - both channels unavailable")
         return {
             "tool": "send_alert_with_failover",
             "channel": "none",
@@ -80,7 +80,7 @@ async def send_alert_with_failover(subject: str, message: str) -> dict[str, Any]
             "channel": "sns",
             "status": "Teams was unavailable; alert sent to SNS successfully.",
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("SNS delivery also failed: %s", exc)
         return {
             "tool": "send_alert_with_failover",

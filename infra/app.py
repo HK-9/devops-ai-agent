@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 
 import aws_cdk as cdk
-
 from infra.stacks.agent_runner_stack import AgentRunnerStack
 from infra.stacks.monitoring_stack import MonitoringStack
 from infra.stacks.networking_stack import NetworkingStack

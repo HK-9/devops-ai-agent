@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import subprocess
 import sys
@@ -19,11 +18,11 @@ from typing import Any
 
 # ── Colour helpers ─────────────────────────────────────────────────────────────
 
-OK     = "\033[92m✅\033[0m"
-FAIL   = "\033[91m❌\033[0m"
-WARN   = "\033[93m⚠️ \033[0m"
-INFO   = "\033[94mℹ️ \033[0m"
-SKIP   = "\033[90m⏭️ \033[0m"
+OK = "\033[92m✅\033[0m"
+FAIL = "\033[91m❌\033[0m"
+WARN = "\033[93m⚠️ \033[0m"
+INFO = "\033[94mℹ️ \033[0m"  # noqa: RUF001
+SKIP = "\033[90m⏭️ \033[0m"
 
 PASS_COUNT = 0
 FAIL_COUNT = 0
@@ -51,6 +50,7 @@ def section(title: str) -> None:
 
 # ── Check 1: Python environment & imports ─────────────────────────────────────
 
+
 def check_python_env() -> None:
     section("1. Python Environment")
 
@@ -63,10 +63,10 @@ def check_python_env() -> None:
 
     # Required packages
     packages = {
-        "boto3":     "AWS SDK",
-        "mcp":       "MCP protocol",
-        "httpx":     "HTTP client (Teams webhook)",
-        "pydantic":  "Config validation",
+        "boto3": "AWS SDK",
+        "mcp": "MCP protocol",
+        "httpx": "HTTP client (Teams webhook)",
+        "pydantic": "Config validation",
         "pydantic_settings": "Env-based config",
     }
     for pkg, desc in packages.items():
@@ -88,6 +88,7 @@ def check_python_env() -> None:
 
 # ── Check 2: .env file and config ─────────────────────────────────────────────
 
+
 def check_env_config() -> dict[str, str]:
     section("2. Environment Variables (.env / shell)")
 
@@ -106,17 +107,31 @@ def check_env_config() -> dict[str, str]:
         result(WARN, ".env file not found — using shell environment only")
 
     # Merge with os.environ (shell takes precedence)
-    merged = {**env_values, **{k: v for k, v in os.environ.items() if k in env_values or k in [
-        "AWS_REGION", "BEDROCK_MODEL_ID", "AGENT_ID", "AGENT_ALIAS_ID",
-        "TEAMS_WEBHOOK_URL", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    ]}}
+    merged = {
+        **env_values,
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if k in env_values
+            or k
+            in [
+                "AWS_REGION",
+                "BEDROCK_MODEL_ID",
+                "AGENT_ID",
+                "AGENT_ALIAS_ID",
+                "TEAMS_WEBHOOK_URL",
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+            ]
+        },
+    }
 
     checks = {
-        "AWS_REGION":         ("ap-southeast-2", True),
-        "BEDROCK_MODEL_ID":   ("anthropic.claude-3-sonnet-20240229-v1:0", True),
-        "AGENT_ID":           (None, True),
-        "AGENT_ALIAS_ID":     (None, True),
-        "TEAMS_WEBHOOK_URL":  (None, False),   # optional for now
+        "AWS_REGION": ("ap-southeast-2", True),
+        "BEDROCK_MODEL_ID": ("anthropic.claude-3-sonnet-20240229-v1:0", True),
+        "AGENT_ID": (None, True),
+        "AGENT_ALIAS_ID": (None, True),
+        "TEAMS_WEBHOOK_URL": (None, False),  # optional for now
     }
 
     for var, (expected, required) in checks.items():
@@ -137,21 +152,21 @@ def check_env_config() -> dict[str, str]:
 
 # ── Check 3: AWS credentials ──────────────────────────────────────────────────
 
+
 def check_aws_credentials() -> dict[str, Any] | None:
     section("3. AWS Credentials")
 
     try:
         import boto3
-        from botocore.exceptions import ClientError, NoCredentialsError, BotoCoreError
 
         sts = boto3.client("sts", region_name="ap-southeast-2")
         identity = sts.get_caller_identity()
-        account  = identity["Account"]
-        arn      = identity["Arn"]
+        account = identity["Account"]
+        arn = identity["Arn"]
         result(OK, f"Credentials valid — Account: {account}")
         result(OK, f"Identity ARN: {arn}")
         return identity
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         msg = str(exc)
         if "SignatureDoesNotMatch" in msg:
             result(FAIL, "Wrong Secret Access Key — run 'aws configure' and re-enter it carefully")
@@ -166,6 +181,7 @@ def check_aws_credentials() -> dict[str, Any] | None:
 
 # ── Check 4: Bedrock model access ─────────────────────────────────────────────
 
+
 def check_bedrock(identity: dict[str, Any] | None, env: dict[str, str]) -> None:
     section("4. Bedrock Agent & Model Access")
 
@@ -177,13 +193,13 @@ def check_bedrock(identity: dict[str, Any] | None, env: dict[str, str]) -> None:
         import boto3
         from botocore.exceptions import ClientError
 
-        region    = env.get("AWS_REGION") or os.environ.get("AWS_REGION", "ap-southeast-2")
-        agent_id  = env.get("AGENT_ID", "")
-        alias_id  = env.get("AGENT_ALIAS_ID", "")
+        region = env.get("AWS_REGION") or os.environ.get("AWS_REGION", "ap-southeast-2")
+        agent_id = env.get("AGENT_ID", "")
+        alias_id = env.get("AGENT_ALIAS_ID", "")
 
         # Model access check
         bedrock = boto3.client("bedrock", region_name=region)
-        models  = bedrock.list_foundation_models(byProvider="Anthropic")
+        models = bedrock.list_foundation_models(byProvider="Anthropic")
         model_ids = [m["modelId"] for m in models.get("modelSummaries", [])]
         target = env.get("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
         if any(target in m for m in model_ids):
@@ -216,11 +232,12 @@ def check_bedrock(identity: dict[str, Any] | None, env: dict[str, str]) -> None:
         else:
             result(WARN, "AGENT_ALIAS_ID not set — cannot verify alias")
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result(FAIL, f"Bedrock check failed: {exc}")
 
 
 # ── Check 5: EC2 access ───────────────────────────────────────────────────────
+
 
 def check_ec2(identity: dict[str, Any] | None, env: dict[str, str]) -> None:
     section("5. EC2 Access")
@@ -231,33 +248,23 @@ def check_ec2(identity: dict[str, Any] | None, env: dict[str, str]) -> None:
 
     try:
         import boto3
-        from botocore.exceptions import ClientError
 
         region = env.get("AWS_REGION") or "ap-southeast-2"
-        ec2    = boto3.client("ec2", region_name=region)
-        resp   = ec2.describe_instances(
-            Filters=[{"Name": "instance-state-name", "Values": ["running"]}]
-        )
-        instances = [
-            i
-            for r in resp.get("Reservations", [])
-            for i in r.get("Instances", [])
-        ]
+        ec2 = boto3.client("ec2", region_name=region)
+        resp = ec2.describe_instances(Filters=[{"Name": "instance-state-name", "Values": ["running"]}])
+        instances = [i for r in resp.get("Reservations", []) for i in r.get("Instances", [])]
 
         if instances:
             result(OK, f"Found {len(instances)} running EC2 instance(s) in {region}")
-            for inst in instances[:3]:   # show up to 3
-                iid  = inst["InstanceId"]
-                name = next(
-                    (t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"),
-                    "(no Name tag)"
-                )
+            for inst in instances[:3]:  # show up to 3
+                iid = inst["InstanceId"]
+                name = next((t["Value"] for t in inst.get("Tags", []) if t["Key"] == "Name"), "(no Name tag)")
                 result(INFO, f"  {iid}  —  {name}")
         else:
             result(WARN, f"No running EC2 instances found in {region}")
-            result(INFO,  "  Launch a t3.micro to test the agent's EC2 tools")
+            result(INFO, "  Launch a t3.micro to test the agent's EC2 tools")
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if "AccessDenied" in str(exc) or "UnauthorizedOperation" in str(exc):
             result(FAIL, "EC2 permission denied — add AmazonEC2ReadOnlyAccess to your IAM user")
         else:
@@ -265,6 +272,7 @@ def check_ec2(identity: dict[str, Any] | None, env: dict[str, str]) -> None:
 
 
 # ── Check 6: CloudWatch access ────────────────────────────────────────────────
+
 
 def check_cloudwatch(identity: dict[str, Any] | None, env: dict[str, str]) -> None:
     section("6. CloudWatch Access")
@@ -277,7 +285,7 @@ def check_cloudwatch(identity: dict[str, Any] | None, env: dict[str, str]) -> No
         import boto3
 
         region = env.get("AWS_REGION") or "ap-southeast-2"
-        cw     = boto3.client("cloudwatch", region_name=region)
+        cw = boto3.client("cloudwatch", region_name=region)
 
         # Check we can list alarms
         alarms = cw.describe_alarms(MaxRecords=10).get("MetricAlarms", [])
@@ -290,7 +298,7 @@ def check_cloudwatch(identity: dict[str, Any] | None, env: dict[str, str]) -> No
         else:
             result(INFO, "  No CloudWatch alarms yet — CDK will create them on deploy")
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if "AccessDenied" in str(exc):
             result(FAIL, "CloudWatch permission denied — add CloudWatchReadOnlyAccess to your IAM user")
         else:
@@ -299,31 +307,34 @@ def check_cloudwatch(identity: dict[str, Any] | None, env: dict[str, str]) -> No
 
 # ── Check 7: MCP servers ──────────────────────────────────────────────────────
 
+
 async def check_mcp_servers() -> None:
     section("7. MCP Servers (import check)")
 
     # We verify the modules import cleanly (fast) rather than spawning
     # subprocesses which has unreliable timing on Windows.
     servers = {
-        "AWS Infra":  "src.mcp_servers.aws_infra.server",
+        "AWS Infra": "src.mcp_servers.aws_infra.server",
         "Monitoring": "src.mcp_servers.monitoring.server",
-        "Teams":      "src.mcp_servers.teams.server",
+        "Teams": "src.mcp_servers.teams.server",
     }
 
     import importlib
+
     for name, module_path in servers.items():
         try:
             importlib.import_module(module_path)
             result(OK, f"{name} MCP server module imports cleanly")
         except ImportError as exc:
             result(FAIL, f"{name} MCP server import error: {exc}")
-        except Exception as exc:  # noqa: BLE001 — server starts (blocks), that's fine
+        except Exception:
             # The server modules call mcp.run() at module level and block —
             # that raises if we import them directly. The import itself passed.
             result(OK, f"{name} MCP server module is valid")
 
 
 # ── Check 8: Teams webhook (optional) ─────────────────────────────────────────
+
 
 async def check_teams(env: dict[str, str]) -> None:
     section("8. Teams Webhook (optional)")
@@ -335,17 +346,19 @@ async def check_teams(env: dict[str, str]) -> None:
 
     try:
         import httpx
+
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, json={"text": "✅ DevOps Agent pre-flight check — Teams webhook is working!"})
         if resp.status_code in (200, 204):
             result(OK, f"Teams webhook delivered successfully (HTTP {resp.status_code})")
         else:
             result(WARN, f"Teams webhook responded with HTTP {resp.status_code}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result(FAIL, f"Teams webhook unreachable: {exc}")
 
 
 # ── Check 9: CDK & Node ───────────────────────────────────────────────────────
+
 
 def check_cdk_tools() -> None:
     section("9. CDK & Node.js Tools")
@@ -379,6 +392,7 @@ def check_cdk_tools() -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 async def main() -> None:
     print()
     print("╔══════════════════════════════════════════════════════════╗")
@@ -386,7 +400,7 @@ async def main() -> None:
     print("╚══════════════════════════════════════════════════════════╝")
 
     check_python_env()
-    env      = check_env_config()
+    env = check_env_config()
     identity = check_aws_credentials()
     check_bedrock(identity, env)
     check_ec2(identity, env)
@@ -398,7 +412,9 @@ async def main() -> None:
     # ── Summary ───────────────────────────────────────────────────
     print()
     print("╔══════════════════════════════════════════════════════════╗")
-    print(f"║  Results:  {OK} {PASS_COUNT} passed   {FAIL} {FAIL_COUNT} failed   {WARN} {WARN_COUNT} warnings         ║")
+    print(
+        f"║  Results:  {OK} {PASS_COUNT} passed   {FAIL} {FAIL_COUNT} failed   {WARN} {WARN_COUNT} warnings         ║"
+    )
     print("╚══════════════════════════════════════════════════════════╝")
     print()
 
@@ -415,58 +431,56 @@ async def main() -> None:
 if __name__ == "__main__":
     asyncio.run(main())
 
-'''
-╔══════════════════════════════════════════════════════════╗
-║        DevOps AI Agent — Setup Validation                ║
-╚══════════════════════════════════════════════════════════╝
-
-1. Python Environment
-   ✓ Python 3.12 detected
-   ✓ Virtual environment active
-   ✓ Required packages installed
-
-2. Environment Configuration
-   ✓ AWS_REGION set to ap-southeast-2
-   ✓ AWS_ACCOUNT_ID set to 830757452063
-   ✓ AGENT_ID set to KYZ4EKSMX5
-   ✓ AGENT_ALIAS_ID set to LFVTIWMNFK
-   ✓ BEDROCK_MODEL_ID set to anthropic.claude-3-sonnet-20240229-v1:0
-
-3. AWS Credentials
-   ✓ AWS credentials found
-   ✓ IAM user: pvharinath
-   ✓ Account: 830757452063
-
-4. Bedrock Access
-   ✓ Bedrock service available
-   ✓ Agent KYZ4EKSMX5 found
-   ✓ Alias LFVTIWMNFK found
-
-5. EC2 Access
-   ✓ EC2 service available
-   ✓ Found 1 instance(s)
-   ✓ Instance i-04458452529a3038d running
-
-6. CloudWatch Access
-   ✓ CloudWatch access confirmed — 1 alarm(s) exist
-   ✓ Alarm: EC2_CPU_High_Alarm — state: ALARM
-
-7. MCP Servers (import check)
-   ✓ AWS Infra MCP server module imports cleanly
-   ✓ Monitoring MCP server module imports cleanly
-   ✓ Teams MCP server module imports cleanly
-
-8. Teams Webhook (optional)
-   ✓ TEAMS_WEBHOOK_URL not set — skipping (add it later)
-
-9. CDK & Node.js Tools
-   ✓ Node.js v22.18.0
-   ✓ AWS CDK 2.170.0
-   ✓ AWS CLI 2.17.18
-
-╔══════════════════════════════════════════════════════════╗
-║  Results:  ✓ 9 passed   ✗ 0 failed   ⚠ 0 warnings         ║
-╚══════════════════════════════════════════════════════════╝
-
-  🎉 You're all set! Run: cdk deploy --all
-''
+# ╔══════════════════════════════════════════════════════════╗
+# ║        DevOps AI Agent - Setup Validation                ║
+# ╚══════════════════════════════════════════════════════════╝
+#
+# 1. Python Environment
+#    ✓ Python 3.12 detected
+#    ✓ Virtual environment active
+#    ✓ Required packages installed
+#
+# 2. Environment Configuration
+#    ✓ AWS_REGION set to ap-southeast-2
+#    ✓ AWS_ACCOUNT_ID set to 830757452063
+#    ✓ AGENT_ID set to KYZ4EKSMX5
+#    ✓ AGENT_ALIAS_ID set to LFVTIWMNFK
+#    ✓ BEDROCK_MODEL_ID set to anthropic.claude-3-sonnet-20240229-v1:0
+#
+# 3. AWS Credentials
+#    ✓ AWS credentials found
+#    ✓ IAM user: pvharinath
+#    ✓ Account: 830757452063
+#
+# 4. Bedrock Access
+#    ✓ Bedrock service available
+#    ✓ Agent KYZ4EKSMX5 found
+#    ✓ Alias LFVTIWMNFK found
+#
+# 5. EC2 Access
+#    ✓ EC2 service available
+#    ✓ Found 1 instance(s)
+#    ✓ Instance i-04458452529a3038d running
+#
+# 6. CloudWatch Access
+#    ✓ CloudWatch access confirmed - 1 alarm(s) exist
+#    ✓ Alarm: EC2_CPU_High_Alarm - state: ALARM
+#
+# 7. MCP Servers (import check)
+#    ✓ AWS Infra MCP server module imports cleanly
+#    ✓ Monitoring MCP server module imports cleanly
+#    ✓ Teams MCP server module imports cleanly
+#
+# 8. Teams Webhook (optional)
+#    ✓ TEAMS_WEBHOOK_URL not set - skipping (add it later)
+#
+# 9. CDK & Node.js Tools
+#    ✓ Node.js v22.18.0
+#    ✓ AWS CDK 2.170.0
+#    ✓ AWS CLI 2.17.18
+#
+# ╔══════════════════════════════════════════════════════════╗
+# ║  Results:  ✓ 9 passed   ✗ 0 failed   ⚠ 0 warnings         ║
+# ╚══════════════════════════════════════════════════════════╝
+#
+#   🎉 You're all set! Run: cdk deploy --all

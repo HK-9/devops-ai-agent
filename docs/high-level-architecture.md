@@ -1,7 +1,7 @@
 # DevOps AI Agent - High-Level Project Document
 
 ## Project Overview
-DevOps AI Agent is an event-driven, LLM-powered operations assistant built to reduce manual incident triage for cloud infrastructure.  
+DevOps AI Agent is an event-driven, LLM-powered operations assistant built to reduce manual incident triage for cloud infrastructure.
 It listens to monitoring events, reasons about what to do, uses tools through MCP servers, and produces actionable incident output with notifications.
 
 ## Problem Statement

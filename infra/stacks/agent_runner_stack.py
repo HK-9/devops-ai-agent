@@ -7,7 +7,6 @@ the DevOps AI Agent.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -45,15 +44,21 @@ def _build_lambda_bundle() -> str:
     # pip install dependencies (targeting Linux x86_64 for Lambda)
     subprocess.check_call(
         [
-            "pip", "install",
-            "-r", str(req_file),
-            "-t", str(bundle),
+            "pip",
+            "install",
+            "-r",
+            str(req_file),
+            "-t",
+            str(bundle),
             "--quiet",
             "--disable-pip-version-check",
-            "--platform", "manylinux2014_x86_64",
+            "--platform",
+            "manylinux2014_x86_64",
             "--only-binary=:all:",
-            "--implementation", "cp",
-            "--python-version", "3.12",
+            "--implementation",
+            "cp",
+            "--python-version",
+            "3.12",
         ],
     )
 
@@ -101,9 +106,7 @@ class AgentRunnerStack(cdk.Stack):
         )
 
         if alert_email:
-            self.alert_topic.add_subscription(
-                subs.EmailSubscription(alert_email)
-            )
+            self.alert_topic.add_subscription(subs.EmailSubscription(alert_email))
         # ── Lambda function ──────────────────────────────────────────
         self.agent_fn = _lambda.Function(
             self,

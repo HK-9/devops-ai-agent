@@ -176,14 +176,9 @@ class DevOpsAgent:
             )
             # ── Call Bedrock (sync SDK → thread) ─────────────────────
             if use_registered_agent:
-                
-                response = await asyncio.to_thread(
-                    self._bedrock_client.invoke_agent, **invoke_kwargs
-                )
+                response = await asyncio.to_thread(self._bedrock_client.invoke_agent, **invoke_kwargs)
             else:
-                response = await asyncio.to_thread(
-                    self._bedrock_client.invoke_inline_agent, **invoke_kwargs
-                )
+                response = await asyncio.to_thread(self._bedrock_client.invoke_inline_agent, **invoke_kwargs)
 
             # ── Process the event stream ─────────────────────────────
             return_control_results = None
@@ -194,19 +189,13 @@ class DevOpsAgent:
                 # Text chunk from the model
                 if "chunk" in event:
                     chunk_bytes = event["chunk"].get("bytes", b"")
-                    text = (
-                        chunk_bytes.decode("utf-8")
-                        if isinstance(chunk_bytes, bytes)
-                        else str(chunk_bytes)
-                    )
+                    text = chunk_bytes.decode("utf-8") if isinstance(chunk_bytes, bytes) else str(chunk_bytes)
                     response_parts.append(text)
 
                 # Model requests tool execution (RETURN_CONTROL)
                 if "returnControl" in event:
                     # Capture top-level invocationId (used by inline agents)
-                    return_control_invocation_id_this_turn = event["returnControl"].get(
-                        "invocationId", ""
-                    )
+                    return_control_invocation_id_this_turn = event["returnControl"].get("invocationId", "")
                     for inv_input in event["returnControl"].get("invocationInputs", []):
                         func_input = inv_input.get("functionInvocationInput", {})
                         tool_name = func_input.get("function", "")
@@ -219,12 +208,14 @@ class DevOpsAgent:
                                 param.get("value", ""), param.get("type", "string")
                             )
 
-                        pending_tool_calls.append({
-                            "tool": tool_name,
-                            "arguments": parameters,
-                            "action_group": action_group,
-                            "invocation_id": invocation_id,
-                        })
+                        pending_tool_calls.append(
+                            {
+                                "tool": tool_name,
+                                "arguments": parameters,
+                                "action_group": action_group,
+                                "invocation_id": invocation_id,
+                            }
+                        )
 
                 # Trace / observability events
                 if "trace" in event:
@@ -243,18 +234,18 @@ class DevOpsAgent:
                 result = await self._mcp.call_tool(tc["tool"], tc["arguments"])
                 result_body = json.dumps(result, default=str)
 
-                trace.append({
-                    "tool_call": tc["tool"],
-                    "arguments": tc["arguments"],
-                    "result": result,
-                })
+                trace.append(
+                    {
+                        "tool_call": tc["tool"],
+                        "arguments": tc["arguments"],
+                        "result": result,
+                    }
+                )
 
                 func_result: dict[str, Any] = {
                     "actionGroup": tc["action_group"],
                     "function": tc["tool"],
-                    "responseBody": {
-                        "TEXT": {"body": result_body}
-                    },
+                    "responseBody": {"TEXT": {"body": result_body}},
                 }
                 # Registered agents include actionInvocationId in each
                 # functionResult; inline agents omit it.
@@ -308,22 +299,16 @@ class DevOpsAgent:
 
         if return_control_results:
             if use_registered_agent:
-                kwargs["sessionState"] = {
-                    "returnControlInvocationResults": return_control_results
-                }
+                kwargs["sessionState"] = {"returnControlInvocationResults": return_control_results}
             else:
-                inline_state: dict[str, Any] = {
-                    "returnControlInvocationResults": return_control_results
-                }
+                inline_state: dict[str, Any] = {"returnControlInvocationResults": return_control_results}
                 if return_control_invocation_id:
                     inline_state["invocationId"] = return_control_invocation_id
                 kwargs["inlineSessionState"] = inline_state
 
         return kwargs
 
-    def _build_action_groups(
-        self, tool_defs: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _build_action_groups(self, tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert MCP tool definitions into Bedrock action-group format.
 
         Groups all MCP tools under a single ``MCPTools`` action group
@@ -346,7 +331,10 @@ class DevOpsAgent:
                 dropped = [k for k, _ in sorted_params[max_params_per_function:]]
                 logger.warning(
                     "Tool %s has %d params (limit %d) — dropping: %s",
-                    tool["name"], len(sorted_params), max_params_per_function, dropped,
+                    tool["name"],
+                    len(sorted_params),
+                    max_params_per_function,
+                    dropped,
                 )
                 sorted_params = sorted_params[:max_params_per_function]
 
@@ -358,11 +346,13 @@ class DevOpsAgent:
                     "required": param_name in required_params,
                 }
 
-            functions.append({
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": parameters,
-            })
+            functions.append(
+                {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": parameters,
+                }
+            )
 
         return [
             {

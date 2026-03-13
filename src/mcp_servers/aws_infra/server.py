@@ -33,8 +33,7 @@ TOOLS = [
     Tool(
         name="list_ec2_instances",
         description=(
-            "List EC2 instances filtered by state and/or tags. "
-            "Returns instance ID, type, state, IPs, and tags."
+            "List EC2 instances filtered by state and/or tags. Returns instance ID, type, state, IPs, and tags."
         ),
         inputSchema={
             "type": "object",
@@ -78,8 +77,7 @@ TOOLS = [
     Tool(
         name="restart_ec2_instance",
         description=(
-            "Restart (stop + start) an EC2 instance. Use with caution — "
-            "prefer confirming with the user first."
+            "Restart (stop + start) an EC2 instance. Use with caution — prefer confirming with the user first."
         ),
         inputSchema={
             "type": "object",

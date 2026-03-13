@@ -1,5 +1,6 @@
 .PHONY: help install lint format typecheck test test-unit test-integration \
-       run-mcp-aws run-mcp-monitoring run-mcp-teams clean
+       run-mcp-aws run-mcp-monitoring run-mcp-teams clean \
+       commit bump changelog hooks check
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -42,3 +43,21 @@ clean: ## Remove caches and build artifacts
 	find . -type d -name .mypy_cache -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
 	rm -rf dist/ build/ *.egg-info
+
+# ---------------------------------------------------------------------------
+# Commit tooling  (backstage-style: lint-staged + changeset workflow)
+# ---------------------------------------------------------------------------
+hooks: ## Install pre-commit git hooks (run once after clone)
+	pre-commit install
+
+commit: ## Interactive conventional commit (guided prompt)
+	cz commit
+
+bump: ## Bump version, update changelog, create git tag
+	cz bump
+
+changelog: ## Regenerate CHANGELOG.md from commit history
+	cz changelog
+
+check: ## Run all pre-commit hooks on entire codebase
+	pre-commit run --all-files

@@ -36,6 +36,7 @@ def create_app() -> Flask:
     app.secret_key = "incident-agent-dev-key-change-in-production"
 
     from web.routes import register_routes
+
     register_routes(app)
 
     return app

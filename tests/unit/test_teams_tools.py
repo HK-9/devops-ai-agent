@@ -21,7 +21,8 @@ from src.mcp_servers.teams.tools import (
 def mock_webhook_url(monkeypatch):
     """Set a fake Teams webhook URL via settings (loaded at import time)."""
     monkeypatch.setattr(
-        settings, "teams_webhook_url",
+        settings,
+        "teams_webhook_url",
         "https://outlook.office.com/webhook/test-hook",
     )
 
