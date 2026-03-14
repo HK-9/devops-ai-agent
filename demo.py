@@ -16,9 +16,7 @@ Run it:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
-import sys
 import textwrap
 from typing import Any
 
@@ -49,7 +47,7 @@ def section(num: int, title: str) -> None:
 
 def code(label: str, obj: Any) -> None:
     print(f"  {DIM}{label}:{RESET}")
-    if isinstance(obj, (dict, list)):
+    if isinstance(obj, dict | list):
         formatted = json.dumps(obj, indent=4, default=str)
         for line in formatted.split("\n"):
             print(f"    {GREEN}{line}{RESET}")
@@ -89,14 +87,17 @@ def demo_configuration() -> None:
         teams_webhook_url="https://outlook.office.com/webhook/demo",
     )
 
-    code("Loaded settings", {
-        "aws_region": s.aws_region,
-        "bedrock_model_id": s.bedrock_model_id,
-        "mcp_transport": s.mcp_transport,
-        "teams_webhook_url": s.teams_webhook_url,
-        "tool_timeout_seconds": s.tool_timeout_seconds,
-        "log_level": s.log_level,
-    })
+    code(
+        "Loaded settings",
+        {
+            "aws_region": s.aws_region,
+            "bedrock_model_id": s.bedrock_model_id,
+            "mcp_transport": s.mcp_transport,
+            "teams_webhook_url": s.teams_webhook_url,
+            "tool_timeout_seconds": s.tool_timeout_seconds,
+            "log_level": s.log_level,
+        },
+    )
 
     info("Access the singleton anywhere:  from src.agent.config import settings")
     success("Configuration loaded successfully\n")
@@ -168,18 +169,20 @@ def demo_event_parser() -> None:
                 "threshold": 80.0,
                 "comparisonOperator": "GreaterThanThreshold",
                 "evaluationPeriods": 2,
-                "metrics": [{
-                    "id": "cpu",
-                    "metricStat": {
-                        "metric": {
-                            "namespace": "AWS/EC2",
-                            "name": "CPUUtilization",
-                            "dimensions": {"InstanceId": "i-0abc123def456789a"},
+                "metrics": [
+                    {
+                        "id": "cpu",
+                        "metricStat": {
+                            "metric": {
+                                "namespace": "AWS/EC2",
+                                "name": "CPUUtilization",
+                                "dimensions": {"InstanceId": "i-0abc123def456789a"},
+                            },
+                            "period": 300,
+                            "stat": "Average",
                         },
-                        "period": 300,
-                        "stat": "Average",
-                    },
-                }],
+                    }
+                ],
             },
         },
     }
@@ -187,14 +190,17 @@ def demo_event_parser() -> None:
     info("Parsing an EventBridge CloudWatch alarm event…")
     alarm = parse_eventbridge_alarm(event)
 
-    code("Parsed Alarm", {
-        "alarm_name": alarm.alarm_name,
-        "state": f"{alarm.previous_state} → {alarm.state}",
-        "instance_id": alarm.instance_id,
-        "metric": f"{alarm.namespace}/{alarm.metric_name}",
-        "threshold": f"{alarm.comparison_operator} {alarm.threshold}",
-        "reason": alarm.reason[:80] + "…",
-    })
+    code(
+        "Parsed Alarm",
+        {
+            "alarm_name": alarm.alarm_name,
+            "state": f"{alarm.previous_state} → {alarm.state}",
+            "instance_id": alarm.instance_id,
+            "metric": f"{alarm.namespace}/{alarm.metric_name}",
+            "threshold": f"{alarm.comparison_operator} {alarm.threshold}",
+            "reason": alarm.reason[:80] + "…",
+        },
+    )
 
     info("Generating agent prompt from alarm event:")
     prompt = build_agent_prompt_from_alarm(alarm)
@@ -215,14 +221,14 @@ def demo_mcp_tools() -> None:
     info("Here are all available tools across the three servers:\n")
 
     # Import the tool manifests
-    from src.mcp_servers.aws_infra.server import TOOLS as aws_tools
-    from src.mcp_servers.monitoring.server import TOOLS as mon_tools
-    from src.mcp_servers.teams.server import TOOLS as teams_tools
+    from src.mcp_servers.aws_infra.server import TOOLS as AWS_TOOLS
+    from src.mcp_servers.monitoring.server import TOOLS as MON_TOOLS
+    from src.mcp_servers.teams.server import TOOLS as TEAMS_TOOLS
 
     all_servers = [
-        ("AWS Infra Server", aws_tools),
-        ("Monitoring Server", mon_tools),
-        ("Teams Server", teams_tools),
+        ("AWS Infra Server", AWS_TOOLS),
+        ("Monitoring Server", MON_TOOLS),
+        ("Teams Server", TEAMS_TOOLS),
     ]
 
     for server_name, tools in all_servers:
@@ -295,7 +301,7 @@ def demo_teams_webhook() -> None:
         alarm_name="devops-agent-high-cpu",
         metric_value="CPU 92.3% (peak 97.8%)",
         summary="Production web server experiencing sustained CPU spike. "
-                "Auto-scaling may be needed if the trend continues.",
+        "Auto-scaling may be needed if the trend continues.",
         actions_taken="Retrieved metrics, instance described, investigating root cause.",
     )
 
@@ -316,9 +322,10 @@ def demo_full_flow() -> None:
 
     info("Simulating the complete event → agent → action → notify pipeline:\n")
 
+    from tests.mocks.mock_responses import MOCK_CPU_METRICS, MOCK_INSTANCE_RUNNING
+
     from src.handlers.event_parser import build_agent_prompt_from_alarm, parse_eventbridge_alarm
     from src.utils.teams_webhook import build_incident_card
-    from tests.mocks.mock_responses import MOCK_CPU_METRICS, MOCK_INSTANCE_RUNNING
 
     # Step 1: CloudWatch alarm fires → EventBridge
     print(f"  {BOLD}Step 1:{RESET} CloudWatch alarm fires →  EventBridge delivers event")
@@ -337,7 +344,18 @@ def demo_full_flow() -> None:
                 "threshold": 80.0,
                 "comparisonOperator": "GreaterThanThreshold",
                 "evaluationPeriods": 2,
-                "metrics": [{"metricStat": {"metric": {"namespace": "AWS/EC2", "name": "CPUUtilization", "dimensions": {"InstanceId": "i-0abc123def456789a"}}, "period": 300}}],
+                "metrics": [
+                    {
+                        "metricStat": {
+                            "metric": {
+                                "namespace": "AWS/EC2",
+                                "name": "CPUUtilization",
+                                "dimensions": {"InstanceId": "i-0abc123def456789a"},
+                            },
+                            "period": 300,
+                        }
+                    }
+                ],
             },
         },
     }
@@ -352,13 +370,19 @@ def demo_full_flow() -> None:
     # Step 3: Agent reasons — calls MCP tools
     print(f"\n  {BOLD}Step 3:{RESET} Agent reasoning loop — calls MCP tools")
     tool_calls = [
-        {"tool": "describe_ec2_instance", "args": {"instance_id": "i-0abc123def456789a"}, "result": MOCK_INSTANCE_RUNNING},
+        {
+            "tool": "describe_ec2_instance",
+            "args": {"instance_id": "i-0abc123def456789a"},
+            "result": MOCK_INSTANCE_RUNNING,
+        },
         {"tool": "get_cpu_metrics", "args": {"instance_id": "i-0abc123def456789a"}, "result": MOCK_CPU_METRICS},
     ]
     for tc in tool_calls:
         success(f"Called {tc['tool']}({json.dumps(tc['args'])})")
-        info(f"  → state: {tc['result'].get('state', 'N/A')}, "
-             f"peak CPU: {tc['result'].get('summary', {}).get('peak', 'N/A')}%")
+        info(
+            f"  → state: {tc['result'].get('state', 'N/A')}, "
+            f"peak CPU: {tc['result'].get('summary', {}).get('peak', 'N/A')}%"
+        )
 
     # Step 4: Agent creates incident notification
     print(f"\n  {BOLD}Step 4:{RESET} Agent sends incident notification to Teams")
@@ -480,7 +504,8 @@ SECTIONS = {
 def main() -> None:
     parser = argparse.ArgumentParser(description="DevOps AI Agent — Interactive Demo")
     parser.add_argument(
-        "--section", "-s",
+        "--section",
+        "-s",
         type=int,
         choices=list(SECTIONS.keys()),
         help="Run a specific section only (1-8)",

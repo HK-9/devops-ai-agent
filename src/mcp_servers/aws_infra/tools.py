@@ -69,17 +69,19 @@ async def list_ec2_instances(
                     name = tag["Value"]
                     break
 
-            instances.append({
-                "instance_id": inst["InstanceId"],
-                "instance_type": inst.get("InstanceType", ""),
-                "state": inst["State"]["Name"],
-                "launch_time": str(inst.get("LaunchTime", "")),
-                "public_ip": inst.get("PublicIpAddress", "N/A"),
-                "private_ip": inst.get("PrivateIpAddress", "N/A"),
-                "name": name,
-                "availability_zone": inst.get("Placement", {}).get("AvailabilityZone", ""),
-                "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
-            })
+            instances.append(
+                {
+                    "instance_id": inst["InstanceId"],
+                    "instance_type": inst.get("InstanceType", ""),
+                    "state": inst["State"]["Name"],
+                    "launch_time": str(inst.get("LaunchTime", "")),
+                    "public_ip": inst.get("PublicIpAddress", "N/A"),
+                    "private_ip": inst.get("PrivateIpAddress", "N/A"),
+                    "name": name,
+                    "availability_zone": inst.get("Placement", {}).get("AvailabilityZone", ""),
+                    "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
+                }
+            )
 
     logger.info("Listed %d EC2 instances (filter=%s)", len(instances), state_filter)
     return {"instances": instances, "count": len(instances)}
@@ -121,10 +123,7 @@ async def describe_ec2_instance(instance_id: str) -> dict[str, Any]:
         "availability_zone": inst.get("Placement", {}).get("AvailabilityZone", ""),
         "vpc_id": inst.get("VpcId", ""),
         "subnet_id": inst.get("SubnetId", ""),
-        "security_groups": [
-            {"id": sg["GroupId"], "name": sg["GroupName"]}
-            for sg in inst.get("SecurityGroups", [])
-        ],
+        "security_groups": [{"id": sg["GroupId"], "name": sg["GroupName"]} for sg in inst.get("SecurityGroups", [])],
         "iam_role": inst.get("IamInstanceProfile", {}).get("Arn", "N/A"),
         "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
         "ebs_volumes": [
@@ -187,9 +186,11 @@ def _state_changes(resp: dict[str, Any]) -> list[dict[str, str]]:
     """Extract state transitions from a stop/start response."""
     changes = []
     for sc in resp.get("StoppingInstances", resp.get("StartingInstances", [])):
-        changes.append({
-            "instance_id": sc["InstanceId"],
-            "previous_state": sc["PreviousState"]["Name"],
-            "current_state": sc["CurrentState"]["Name"],
-        })
+        changes.append(
+            {
+                "instance_id": sc["InstanceId"],
+                "previous_state": sc["PreviousState"]["Name"],
+                "current_state": sc["CurrentState"]["Name"],
+            }
+        )
     return changes

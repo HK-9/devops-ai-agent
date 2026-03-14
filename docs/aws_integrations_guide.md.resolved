@@ -1,6 +1,6 @@
 # DevOps AI Agent — Beginner's Complete Setup Guide
 
-> This guide answers every question about setting up this project from scratch.  
+> This guide answers every question about setting up this project from scratch.
 > No prior AWS experience assumed.
 
 ---
@@ -61,7 +61,7 @@ CDK uploads ZIP to AWS Lambda
 AWS runs it when CloudWatch alarm fires
 ```
 
-**You never manually create the Lambda in the Console** — CDK does it.  
+**You never manually create the Lambda in the Console** — CDK does it.
 But you DO need to add env vars manually (or fix the CDK code — shown in Part 6).
 
 ---
@@ -70,7 +70,7 @@ But you DO need to add env vars manually (or fix the CDK code — shown in Part 
 
 ### What is IAM?
 
-IAM (Identity and Access Management) is AWS's security system.  
+IAM (Identity and Access Management) is AWS's security system.
 **Rule:** Every piece of code that touches AWS needs permission to do so.
 
 In this project there are **two identities** that need permissions:
@@ -99,7 +99,7 @@ aws sts get-caller-identity
 ```
 You should see your account ID and username. If you get an error, your credentials are wrong.
 
-**What permissions does your IAM user need?**  
+**What permissions does your IAM user need?**
 Go to AWS Console → IAM → Users → your username → Add permissions → Attach policies:
 
 | Policy Name | Why Needed |
@@ -171,7 +171,7 @@ Without the CloudWatch Agent, these tools return:
 
 ### Do You Need It Right Now?
 
-**No — skip it for now.** The agent will still work with just CPU metrics.  
+**No — skip it for now.** The agent will still work with just CPU metrics.
 Come back to this later when you want full observability.
 
 ### How to Install (when ready)
@@ -355,7 +355,7 @@ Do these **in order**. Skip steps 8–9 for now (Teams comes later).
   aws configure
   # Enter your Access Key, Secret Key, region: ap-southeast-2
   ```
-  
+
 - [ ] **Step 2:** Verify it works
   ```bash
   aws sts get-caller-identity

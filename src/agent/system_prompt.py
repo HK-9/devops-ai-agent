@@ -84,7 +84,5 @@ def build_alarm_prompt(instance_id: str, alarm_name: str, reason: str) -> str:
 def build_adhoc_prompt(user_query: str) -> str:
     """Wrap an ad-hoc user query with light framing."""
     return (
-        f"An engineer has asked:\n\n"
-        f"> {user_query}\n\n"
-        f"Use your tools to answer the question as accurately as possible."
+        f"An engineer has asked:\n\n> {user_query}\n\nUse your tools to answer the question as accurately as possible."
     )

@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from flask import Flask, jsonify, render_template, request, session
@@ -48,11 +48,7 @@ def build_stats() -> dict[str, int]:
         "total_incidents": len(_incidents),
         "resolved": sum(1 for i in _incidents if i.get("status") == "resolved"),
         "escalated": sum(1 for i in _incidents if i.get("status") == "escalated"),
-        "active": sum(
-            1
-            for i in _incidents
-            if i.get("status") not in ("resolved", "escalated", "rejected")
-        ),
+        "active": sum(1 for i in _incidents if i.get("status") not in ("resolved", "escalated", "rejected")),
     }
 
 
@@ -69,7 +65,7 @@ def append_audit_entry(
     """Append an audit log record."""
     _audit_logs.append(
         {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "incident_id": incident_id,
             "phase": phase,
             "result": result,
@@ -99,7 +95,7 @@ async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, A
         "source": "aws.cloudwatch",
         "account": "demo-account",
         "region": alert_payload.get("region", "us-east-1"),
-        "time": alert_payload.get("timestamp", datetime.now(timezone.utc).isoformat()),
+        "time": alert_payload.get("timestamp", datetime.now(UTC).isoformat()),
         "detail": {
             "alarmName": alert_payload.get("alarm_name", "DemoAlarm"),
             "alarmDescription": f"Simulated alert for {alert_payload.get('alert_type', 'unknown')}",
@@ -109,9 +105,7 @@ async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, A
                     f"{alert_payload.get('metric_name', 'Metric')} breached threshold: "
                     f"{alert_payload.get('metric_value')} > {alert_payload.get('threshold')}"
                 ),
-                "timestamp": alert_payload.get(
-                    "timestamp", datetime.now(timezone.utc).isoformat()
-                ),
+                "timestamp": alert_payload.get("timestamp", datetime.now(UTC).isoformat()),
             },
             "previousState": {"value": "OK"},
             "configuration": {
@@ -121,9 +115,7 @@ async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, A
                             "metric": {
                                 "namespace": "AWS/EC2",
                                 "name": alert_payload.get("metric_name", "CPUUtilization"),
-                                "dimensions": {
-                                    "InstanceId": alert_payload.get("instance_id", "")
-                                },
+                                "dimensions": {"InstanceId": alert_payload.get("instance_id", "")},
                             },
                             "period": 300,
                         }
@@ -166,8 +158,8 @@ async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, A
     incident = {
         "incident_id": session_id,
         "status": status,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "resolved_at": datetime.now(timezone.utc).isoformat() if status == "resolved" else None,
+        "created_at": datetime.now(UTC).isoformat(),
+        "resolved_at": datetime.now(UTC).isoformat() if status == "resolved" else None,
         "triage": {
             "alert_type": alert_payload.get("alert_type"),
             "instance_id": alert_payload.get("instance_id"),
@@ -186,13 +178,7 @@ async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, A
 
     append_audit_entry(
         incident_id=session_id,
-        phase=(
-            "verification"
-            if status == "resolved"
-            else "escalation"
-            if status == "escalated"
-            else "remediation"
-        ),
+        phase=("verification" if status == "resolved" else "escalation" if status == "escalated" else "remediation"),
         result=status.upper(),
         action="agent_completed",
         instance_id=alarm.instance_id,
@@ -298,7 +284,7 @@ def register_routes(app: Flask):
                     "threshold": 95,
                     "alarm_name": "HighCPU-agent-managed",
                     "region": "us-east-1",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 },
                 "disk_full": {
                     "instance_id": data.get("instance_id", "i-0def456ghi789"),
@@ -308,7 +294,7 @@ def register_routes(app: Flask):
                     "threshold": 90,
                     "alarm_name": "DiskFull-agent-managed",
                     "region": "us-east-1",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 },
                 "unreachable": {
                     "instance_id": data.get("instance_id", "i-0ghi789jkl012"),
@@ -318,7 +304,7 @@ def register_routes(app: Flask):
                     "threshold": 0,
                     "alarm_name": "StatusCheckFailed-agent-managed",
                     "region": "us-east-1",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 },
                 "memory_exhaustion": {
                     "instance_id": data.get("instance_id", "i-0mno345pqr678"),
@@ -328,7 +314,7 @@ def register_routes(app: Flask):
                     "threshold": 90,
                     "alarm_name": "HighMemory-agent-managed",
                     "region": "us-east-1",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 },
             }
 

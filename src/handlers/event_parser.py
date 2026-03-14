@@ -112,10 +112,10 @@ def build_agent_prompt_from_alarm(alarm: AlarmEvent) -> str:
         f"Severity: {severity}.\n\n"
         f"You MUST call these tools in this exact order. "
         f"Do NOT call list_ec2_instances.\n\n"
-        f"1. Call get_cpu_metrics with instance_id=\"{alarm.instance_id}\" "
+        f'1. Call get_cpu_metrics with instance_id="{alarm.instance_id}" '
         f"and period_minutes=30\n"
-        f"2. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
+        f'2. Call describe_ec2_instance with instance_id="{alarm.instance_id}"\n'
         f"3. Call send_alert_with_failover with "
-        f"subject=\"HIGH CPU: {alarm.instance_id}\" and a message "
+        f'subject="HIGH CPU: {alarm.instance_id}" and a message '
         f"containing the CPU metrics from step 1 and instance details from step 2\n"
     )

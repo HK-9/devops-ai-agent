@@ -23,7 +23,7 @@ class MonitoringStack(cdk.Stack):
 
         # ── Parameters ───────────────────────────────────────────────
         monitored_instance_id = self.node.try_get_context("monitored_instance_id") or "i-0000000000example"
-        
+
         instance_id_param = cdk.CfnParameter(
             self,
             "MonitoredInstanceId",

@@ -24,9 +24,7 @@ def sample_alarm_event() -> dict:
         "account": "123456789012",
         "time": "2026-03-07T10:00:00Z",
         "region": "us-east-1",
-        "resources": [
-            "arn:aws:cloudwatch:us-east-1:123456789012:alarm:devops-agent-high-cpu"
-        ],
+        "resources": ["arn:aws:cloudwatch:us-east-1:123456789012:alarm:devops-agent-high-cpu"],
         "detail": {
             "alarmName": "devops-agent-high-cpu",
             "alarmDescription": "CPU utilization exceeds 80% for instance i-0abc123def456789a",

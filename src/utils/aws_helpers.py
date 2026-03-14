@@ -47,9 +47,7 @@ def setup_logging(name: str = "devops-agent") -> logging.Logger:
         if settings.log_format == "json":
             handler.setFormatter(JSONFormatter())
         else:
-            handler.setFormatter(
-                logging.Formatter("%(asctime)s │ %(levelname)-8s │ %(name)s │ %(message)s")
-            )
+            handler.setFormatter(logging.Formatter("%(asctime)s │ %(levelname)-8s │ %(name)s │ %(message)s"))
         logger.addHandler(handler)
 
     return logger
