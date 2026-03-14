@@ -20,3 +20,10 @@ repos:
       - id: ruff          # lint + auto-fix staged files
         args: [--fix, --unsafe-fixes]
       - id: ruff-format   # auto-format staged files
+
+  # ── Commit message validation (rejects empty or malformed messages) ──
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.13.9
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]

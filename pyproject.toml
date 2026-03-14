@@ -92,9 +92,9 @@ update_changelog_on_bump = true
 changelog_file = "CHANGELOG.md"
 
 [tool.commitizen.customize]
-message_template = "{{change_type}}{% if scope %}({{scope}}){% endif %}: {{message}}"
+message_template = "{{change_type}}{% if scope %}({{scope}}){% endif %}: {{message}}{% if body %}\n\n{{body}}{% endif %}"
 schema = "<type>(<scope>): <message>"
-schema_pattern = "(feat|fix|refactor|docs|test|ci|build|chore|perf|style|revert)(\\(\\S+\\))?:\\s.*"
+schema_pattern = "(feat|fix|refactor|docs|test|ci|build|chore|perf|style|revert)(\\(\\S+\\))?:\\s.+"
 bump_pattern = "^(feat|fix|refactor|perf)"
 bump_map = { feat = "MINOR", fix = "PATCH", refactor = "PATCH", perf = "PATCH" }
 change_type_order = ["feat", "fix", "refactor", "perf", "docs", "test", "ci", "build", "chore", "style", "revert"]
@@ -140,3 +140,8 @@ choices = [
 type = "input"
 name = "message"
 message = "✏️  Short description (imperative, lowercase, no period):\n"
+
+[[tool.commitizen.customize.questions]]
+type = "input"
+name = "body"
+message = "📄 Additional details (press Enter to skip):\n"

@@ -48,7 +48,7 @@ clean: ## Remove caches and build artifacts
 # Commit tooling  (backstage-style: lint-staged + changeset workflow)
 # ---------------------------------------------------------------------------
 hooks: ## Install pre-commit git hooks (run once after clone)
-	pre-commit install
+	pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 lint-staged: ## Run pre-commit hooks on staged files
 	@echo ">>> Running pre-commit checks on staged files..."
