@@ -29,25 +29,59 @@ flowchart LR
 
 ## Quick Start
 
+### Windows (one-time setup)
+
+Run the setup script as **Administrator** (right-click PowerShell → "Run as Administrator"):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File setup.ps1
+```
+
+This automatically:
+- Installs **Chocolatey** (if missing)
+- Installs **make** (if missing)
+- Creates a `.venv` virtual environment
+- Installs all project dependencies
+- Configures git hooks (lint + commit message validation)
+
+### After setup (all platforms)
+
 ```bash
-# 1. Create & activate virtual environment
-python -m venv .venv
+# Activate virtual environment
 .venv\Scripts\activate          # Windows PowerShell
 source .venv/bin/activate       # Linux / macOS
 
+# See all available commands
+make help
+
+# Commit changes (guided prompt with lint + format)
+make commit
+
+# Run tests
+make test
+```
+
+### Manual setup (Linux / macOS)
+
+```bash
+# 1. Create & activate virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
 # 2. Install dependencies (dev + infra extras)
 make install
-# or manually:
-pip install -e ".[dev,infra]"
 
-# 3. Run linter & type checker
+# 3. Install git hooks
+make hooks
+
+# 4. Run linter & type checker
 make lint
 make typecheck
 
-# 4. Run tests
+# 5. Run tests
 make test
 
-# 5. Start an MCP server locally (stdio transport)
+# 6. Start an MCP server locally (stdio transport)
 make run-mcp-aws
 ```
 
