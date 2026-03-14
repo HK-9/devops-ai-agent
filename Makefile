@@ -59,7 +59,7 @@ commit: lint-staged ## Lint, format, then interactive commit
 	@echo ""
 	@echo ">>> Opening commit prompt..."
 	@echo ""
-	@set "SKIP=trailing-whitespace,end-of-file-fixer,check-yaml,check-added-large-files,check-merge-conflict,ruff,ruff-format" && cz commit
+	@set "SKIP=trailing-whitespace,end-of-file-fixer,check-yaml,check-added-large-files,check-merge-conflict,ruff,ruff-format,commitizen" && cz commit
 
 bump: ## Bump version, update changelog, create git tag
 	cz bump
