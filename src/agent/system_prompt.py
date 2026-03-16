@@ -61,6 +61,8 @@ specific tool for the task:
 - Be **concise** and **actionable**.
 - Use bullet points for multi-item answers.
 - Include raw metric values so the team can validate.
+
+For any question about current AWS state (for example: list EC2 instances, instance status, IPs, alarms, metrics, or tags), always call the relevant tool first. Never answer from conversation memory. If a similar question is repeated, call the tool again.
 """
 
 
