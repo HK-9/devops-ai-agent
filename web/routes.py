@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,10 +17,117 @@ from src.handlers.event_parser import build_agent_prompt_from_alarm, parse_event
 
 logger = logging.getLogger(__name__)
 
-_agent: DevOpsAgent | None = None
 _incidents: list[dict[str, Any]] = []
 _audit_logs: list[dict[str, Any]] = []
 
+def is_ec2_list_query(message: str) -> bool:
+    """Detect simple EC2 inventory/list queries."""
+    text = message.lower()
+    return (
+        ("ec2" in text or "instance" in text or "instances" in text)
+        and any(word in text for word in ["list", "show", "which", "what"])
+    )
+
+
+def infer_ec2_state_filter(message: str) -> str:
+    """Infer instance state filter from user message."""
+    text = message.lower()
+
+    if "all" in text:
+        return "all"
+    if "stopped" in text:
+        return "stopped"
+
+    return "running"
+
+
+def format_ec2_instances(tool_result: dict[str, Any], state_filter: str) -> str:
+    """Format EC2 list tool output into chat-friendly text."""
+    if tool_result.get("error"):
+        return tool_result.get("message", "Failed to fetch EC2 instances.")
+
+    instances = tool_result.get("instances", [])
+    count = tool_result.get("count", len(instances))
+
+    if not instances:
+        return f"No EC2 instances found for state filter: {state_filter}."
+
+    lines = [f"Found {count} EC2 instance(s) with state filter '{state_filter}':", ""]
+
+    for inst in instances:
+        lines.append(
+            f"- {inst.get('instance_id', 'N/A')} | "
+            f"{inst.get('name') or 'Unnamed'} | "
+            f"{inst.get('state', 'unknown')} | "
+            f"{inst.get('instance_type', 'N/A')} | "
+            f"Private IP: {inst.get('private_ip', 'N/A')} | "
+            f"Public IP: {inst.get('public_ip', 'N/A')}"
+        )
+
+    return "\n".join(lines)
+
+def is_cpu_metrics_query(message: str) -> bool:
+    """Detect CPU metric queries for EC2."""
+    text = message.lower()
+    return (
+        "cpu" in text
+        and any(word in text for word in ["metric", "metrics", "utilization", "usage", "show", "get"])
+    )
+
+
+def extract_instance_id(message: str) -> str | None:
+    """Extract an EC2 instance ID from the user message."""
+    match = re.search(r"\b(i-[a-zA-Z0-9]+)\b", message)
+    return match.group(1) if match else None
+
+
+def infer_minutes_window(message: str) -> int:
+    """Infer metrics lookback window from user message."""
+    text = message.lower()
+
+    if "24h" in text or "24 hour" in text or "24 hours" in text:
+        return 1440
+    if "6h" in text or "6 hour" in text or "6 hours" in text:
+        return 360
+    if "2h" in text or "2 hour" in text or "2 hours" in text:
+        return 120
+    if "30 min" in text or "30 mins" in text or "30 minutes" in text:
+        return 30
+
+    return 60
+
+
+def format_cpu_metrics(tool_result: dict[str, Any], instance_id: str, minutes: int) -> str:
+    """Format CPU metrics tool output into chat-friendly text."""
+    if tool_result.get("error"):
+        return tool_result.get("message", f"Failed to fetch CPU metrics for {instance_id}.")
+
+    summary = tool_result.get("summary", {})
+    datapoints = tool_result.get("datapoints", [])
+
+    if not datapoints:
+        return f"No CPU metrics found for {instance_id} in the last {minutes} minutes."
+
+    lines = [
+        f"CPU metrics for {instance_id} (last {minutes} minutes):",
+        "",
+        f"Average CPU: {summary.get('average', 'N/A')}%",
+        f"Peak CPU: {summary.get('peak', 'N/A')}%",
+        f"Latest CPU: {summary.get('latest', 'N/A')}%",
+        f"Datapoints: {summary.get('datapoint_count', len(datapoints))}",
+        "",
+        "Recent datapoints:",
+    ]
+
+    for point in datapoints[-10:]:
+        lines.append(
+            f"- {point.get('timestamp', 'N/A')} | "
+            f"avg: {point.get('average', 'N/A')}% | "
+            f"max: {point.get('maximum', 'N/A')}% | "
+            f"min: {point.get('minimum', 'N/A')}%"
+        )
+
+    return "\n".join(lines)
 
 def run_async(coro):
     """Run async code from Flask sync routes."""
@@ -33,13 +141,14 @@ def run_async(coro):
             loop.close()
 
 
-async def get_agent() -> DevOpsAgent:
-    """Get or create the shared agent instance."""
-    global _agent
-    if _agent is None:
-        _agent = DevOpsAgent()
-        await _agent.initialise()
-    return _agent
+async def run_with_agent(callback):
+    """Create a fresh agent for one request, then clean it up."""
+    agent = DevOpsAgent()
+    await agent.initialise()
+    try:
+        return await callback(agent)
+    finally:
+        await agent.shutdown()
 
 
 def build_stats() -> dict[str, int]:
@@ -93,7 +202,7 @@ def derive_status(agent_result: dict[str, Any]) -> str:
 
 async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, Any]:
     """Run a simulated alert through the real DevOps agent."""
-    agent = await get_agent()
+
 
     eventbridge_event = {
         "source": "aws.cloudwatch",
@@ -149,7 +258,10 @@ async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, A
         reasoning=prompt,
     )
 
-    agent_result = await agent.invoke(prompt, session_id=session_id)
+    async def _work(agent: DevOpsAgent):
+        return await agent.invoke(prompt, session_id=session_id)
+
+    agent_result = await run_with_agent(_work)
     status = derive_status(agent_result)
 
     tool_calls = agent_result.get("tool_calls", [])
@@ -235,11 +347,86 @@ def register_routes(app: Flask):
             if "session_id" not in session:
                 session["session_id"] = str(uuid.uuid4())
 
-            async def _chat():
-                agent = await get_agent()
-                return await agent.invoke(message, session_id=session["session_id"])
+            # Direct deterministic path for EC2 inventory queries
+            if is_ec2_list_query(message):
+                state_filter = infer_ec2_state_filter(message)
 
-            result = run_async(_chat())
+                async def _direct_ec2():
+                    async def _work(agent: DevOpsAgent):
+                        tool_result = await agent.call_tool(
+                            "list_ec2_instances",
+                            {
+                                "state_filter": state_filter,
+                                "max_results": 50,
+                            },
+                        )
+                        return {
+                            "response": format_ec2_instances(tool_result, state_filter),
+                            "tool_calls": [
+                                {
+                                    "tool_call": "list_ec2_instances",
+                                    "arguments": {
+                                        "state_filter": state_filter,
+                                        "max_results": 50,
+                                    },
+                                    "result": tool_result,
+                                }
+                            ],
+                            "turns": 1,
+                        }
+
+                    return await run_with_agent(_work)
+
+                result = run_async(_direct_ec2())
+            elif is_cpu_metrics_query(message):
+                instance_id = extract_instance_id(message)
+                if not instance_id:
+                    return jsonify(
+                        {
+                            "error": "Please provide an EC2 instance ID, for example: i-0123456789abcdef0"
+                        }
+                    ), 400
+
+                minutes = infer_minutes_window(message)
+
+                async def _direct_cpu():
+                    async def _work(agent: DevOpsAgent):
+                        tool_result = await agent.call_tool(
+                            "get_cpu_metrics",
+                            {
+                                "instance_id": instance_id,
+                                "period": 300,
+                                "minutes": minutes,
+                            },
+                        )
+                        return {
+                            "response": format_cpu_metrics(tool_result, instance_id, minutes),
+                            "tool_calls": [
+                                {
+                                    "tool_call": "get_cpu_metrics",
+                                    "arguments": {
+                                        "instance_id": instance_id,
+                                        "period": 300,
+                                        "minutes": minutes,
+                                    },
+                                    "result": tool_result,
+                                }
+                            ],
+                            "turns": 1,
+                        }
+
+                    return await run_with_agent(_work)
+
+                result = run_async(_direct_cpu())
+
+            else:
+                async def _chat():
+                    async def _work(agent: DevOpsAgent):
+                        return await agent.invoke(message, session_id=session["session_id"])
+
+                    return await run_with_agent(_work)
+
+                result = run_async(_chat())
 
             append_audit_entry(
                 incident_id=session["session_id"],

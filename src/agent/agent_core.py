@@ -87,7 +87,7 @@ class DevOpsAgent:
 
     # ── Invocation ───────────────────────────────────────────────────────
 
-    async def invoke(self, prompt: str, session_id: str | None = None) -> dict[str, Any]:
+    async def invoke(self, prompt: str, session_id: str | None = None, *, is_alarm: bool = False) -> dict[str, Any]:
         """Invoke the agent with a natural-language prompt.
 
         This method sends the prompt to Bedrock AgentCore, which manages
@@ -98,6 +98,8 @@ class DevOpsAgent:
         Args:
             prompt:     Natural-language instruction for the agent.
             session_id: Optional session ID for conversation continuity.
+            is_alarm:   If True, exclude list_ec2_instances to prevent
+                        Nova Lite from looping on it.
 
         Returns:
             Dict with ``response`` text and ``tool_calls`` trace.
@@ -111,7 +113,7 @@ class DevOpsAgent:
 
         try:
             sid = session_id or str(uuid.uuid4())
-            response_text, turns = await self._handle_reasoning_loop(prompt, sid, tool_calls_trace)
+            response_text, turns = await self._handle_reasoning_loop(prompt, sid, tool_calls_trace, is_alarm=is_alarm)
 
             return {
                 "response": response_text,
@@ -128,6 +130,8 @@ class DevOpsAgent:
         prompt: str,
         session_id: str,
         trace: list[dict[str, Any]],
+        *,
+        is_alarm: bool = False,
     ) -> tuple[str, int]:
         """Execute the Bedrock reasoning loop, bridging tool calls to MCP.
 
@@ -140,8 +144,7 @@ class DevOpsAgent:
             A tuple of (response_text, turn_count).
         """
         # tool_defs = self._mcp.get_tools_for_agent()
-        all_tools = self._mcp.get_tools_for_agent()
-        tool_defs = [t for t in all_tools if t["name"] == "list_ec2_instances"]
+        tool_defs = self._mcp.get_tools_for_agent()
         # Always use inline agent mode — invoke_agent requires separate
         # IAM permissions that are not configured for this deployment.
         use_registered_agent = False
@@ -168,10 +171,6 @@ class DevOpsAgent:
                 use_registered_agent=use_registered_agent,
                 return_control_invocation_id=return_control_invocation_id,
             )
-            logger.info(
-    "ACTION GROUPS PAYLOAD: %s",
-    json.dumps(invoke_kwargs.get("actionGroups", []), indent=2)
-)
             # ── Call Bedrock (sync SDK → thread) ─────────────────────
             if use_registered_agent:
                 

@@ -46,9 +46,9 @@ TOOLS = [
                     "enum": ["running", "stopped", "terminated", "all"],
                 },
                 "tag_filters": {
-                    "type": "object",
-                    "description": "Optional tag key-value pairs to filter by.",
-                    "additionalProperties": {"type": "string"},
+                    "type": "string",
+                    "description": "Optional tag filters as comma-separated key=value pairs, e.g. 'Name=web,Env=prod'. Leave empty for no tag filtering.",
+                    "default": "",
                 },
                 "max_results": {
                     "type": "integer",

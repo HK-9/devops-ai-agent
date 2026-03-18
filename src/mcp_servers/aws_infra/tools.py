@@ -19,14 +19,14 @@ logger = setup_logging("mcp.aws-infra")
 
 async def list_ec2_instances(
     state_filter: str = "running",
-    tag_filters: dict[str, str] | None = None,
+    tag_filters: str | dict[str, str] | None = None,
     max_results: int = 50,
 ) -> dict[str, Any]:
     """List EC2 instances, optionally filtered by state and tags.
 
     Args:
         state_filter: Instance state — "running", "stopped", "all".
-        tag_filters:  Optional dict of tag-name → tag-value filters.
+        tag_filters:  Optional comma-separated key=value pairs, e.g. 'Name=web,Env=prod'.
         max_results:  Maximum number of instances to return.
 
     Returns:
@@ -35,11 +35,21 @@ async def list_ec2_instances(
     """
     ec2 = get_client("ec2")
 
+    # Parse tag_filters: accept string "Key=Value,Key2=Value2" or dict
+    parsed_tags: dict[str, str] = {}
+    if isinstance(tag_filters, str) and tag_filters.strip():
+        for pair in tag_filters.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                parsed_tags[k.strip()] = v.strip()
+    elif isinstance(tag_filters, dict):
+        parsed_tags = tag_filters
+
     filters: list[dict[str, Any]] = []
     if state_filter and state_filter != "all":
         filters.append({"Name": "instance-state-name", "Values": [state_filter]})
-    if tag_filters:
-        for key, value in tag_filters.items():
+    if parsed_tags:
+        for key, value in parsed_tags.items():
             filters.append({"Name": f"tag:{key}", "Values": [value]})
 
     kwargs: dict[str, Any] = {"MaxResults": min(max_results, 1000)}

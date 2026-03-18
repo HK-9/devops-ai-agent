@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     # ── Timeouts & Limits ────────────────────────────────────────────────
     tool_timeout_seconds: int = 30
     lambda_timeout_seconds: int = 300
-    max_reasoning_turns: int = 10
+    max_reasoning_turns: int = 15
 
     # ── Logging ──────────────────────────────────────────────────────────
     log_level: str = "INFO"

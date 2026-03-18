@@ -78,7 +78,7 @@ async def _async_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     agent = await _get_agent()
     session_id = str(uuid.uuid4())
 
-    result = await agent.invoke(prompt, session_id=session_id)
+    result = await agent.invoke(prompt, session_id=session_id, is_alarm=True)
 
     if result.get("error"):
         logger.error("Agent invocation failed: %s", result.get("message"))
