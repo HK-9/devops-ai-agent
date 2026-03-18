@@ -37,12 +37,25 @@ Run the setup script as **Administrator** (right-click PowerShell → "Run as Ad
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
-This automatically:
-- Installs **Chocolatey** (if missing)
-- Installs **make** (if missing)
-- Creates a `.venv` virtual environment
-- Installs all project dependencies
-- Configures git hooks (lint + commit message validation)
+### Linux / macOS (one-time setup)
+
+```bash
+bash setup.sh
+```
+
+### What the setup scripts do
+
+Both scripts perform the same steps with **verbose, real-time progress output** (progress bar + percentage):
+
+1. Check **Python 3.12+** and **Git** are installed
+2. Install **make** (via Chocolatey on Windows, system package manager on Linux, Homebrew/Xcode on macOS)
+3. Create a `.venv` virtual environment
+4. Upgrade pip
+5. Install all project dependencies (`dev` + `infra` extras)
+6. Configure git hooks (lint + commit message validation)
+
+> **Note:** On Windows, Chocolatey and make installation require Administrator privileges.
+> On Linux/macOS, make installation may prompt for `sudo` password if make is not already present.
 
 ### After setup (all platforms)
 
@@ -61,29 +74,56 @@ make commit
 make test
 ```
 
-### Manual setup (Linux / macOS)
+### Manual setup (if you prefer not to use the scripts)
+
+<details>
+<summary>Click to expand manual steps</summary>
+
+#### Linux / macOS
 
 ```bash
 # 1. Create & activate virtual environment
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 
-# 2. Install dependencies (dev + infra extras)
+# 2. Upgrade pip
+python -m pip install --upgrade pip
+
+# 3. Install dependencies (dev + infra extras)
 make install
 
-# 3. Install git hooks
+# 4. Install git hooks
 make hooks
 
-# 4. Run linter & type checker
+# 5. Run linter & type checker
 make lint
 make typecheck
 
+# 6. Run tests
+make test
+```
+
+#### Windows (PowerShell)
+
+```powershell
+# 1. Create & activate virtual environment
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# 2. Upgrade pip
+python -m pip install --upgrade pip
+
+# 3. Install dependencies
+pip install -e ".[dev,infra]"
+
+# 4. Install git hooks
+pre-commit install --hook-type pre-commit --hook-type commit-msg
+
 # 5. Run tests
 make test
-
-# 6. Start an MCP server locally (stdio transport)
-make run-mcp-aws
 ```
+
+</details>
 
 ## CDK Deployment
 

@@ -9,24 +9,100 @@
 
     Requires: Python 3.12+, Git
     Installs: Chocolatey (if missing), make (if missing), project deps, pre-commit hooks
+
+    For Linux/macOS users, run: bash setup.sh
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Guard: Windows only ───────────────────────────────────────────────
+# -- Guard: Windows only ------------------------------------------------
 if ($env:OS -ne "Windows_NT") {
-    Write-Host "This script is for Windows only. On Linux/macOS use:" -ForegroundColor Red
-    Write-Host "  python -m venv .venv && source .venv/bin/activate && make install && make hooks" -ForegroundColor Yellow
+    Write-Host "This script is for Windows only. On Linux/macOS run:" -ForegroundColor Red
+    Write-Host "  bash setup.sh" -ForegroundColor Yellow
     exit 1
 }
 
-function Write-Step($msg) { Write-Host "`n>>> $msg" -ForegroundColor Cyan }
-function Write-OK($msg)   { Write-Host "    [OK] $msg" -ForegroundColor Green }
-function Write-Skip($msg) { Write-Host "    [SKIP] $msg" -ForegroundColor Yellow }
-function Write-Err($msg)  { Write-Host "    [ERROR] $msg" -ForegroundColor Red }
+# -- Progress tracking --------------------------------------------------
+$TOTAL_STEPS = 7
+$CURRENT_STEP = 0
 
-# ── 1. Check Python ────────────────────────────────────────────────────
+function Write-Step($msg) {
+    $script:CURRENT_STEP++
+    $pct = [math]::Round(($script:CURRENT_STEP / $TOTAL_STEPS) * 100)
+    $filled = [math]::Floor($pct / 5)
+    $empty  = 20 - $filled
+    $bar = ("#" * $filled) + ("-" * $empty)
+    Write-Host ""
+    Write-Host ("  [{0}] {1}% -- Step {2}/{3}" -f $bar, $pct, $script:CURRENT_STEP, $TOTAL_STEPS) -ForegroundColor Magenta
+    Write-Host ("  >>> " + $msg) -ForegroundColor Cyan
+}
+
+function Write-OK($msg)   { Write-Host "      [OK] $msg" -ForegroundColor Green }
+function Write-Skip($msg) { Write-Host "      [SKIP] $msg" -ForegroundColor Yellow }
+function Write-Err($msg)  { Write-Host "      [ERROR] $msg" -ForegroundColor Red }
+
+function Invoke-Verbose {
+    <#
+    .SYNOPSIS
+        Run an external command with real-time stdout/stderr streaming.
+        Throws on non-zero exit code.
+    #>
+    param(
+        [Parameter(Mandatory)] [string]   $Label,
+        [Parameter(Mandatory)] [string]   $Command,
+        [Parameter(Mandatory)] [string[]] $Arguments
+    )
+
+    Write-Host ("      [{0}] Running: {1} {2}" -f $Label, $Command, ($Arguments -join ' ')) -ForegroundColor DarkGray
+
+    $pinfo = New-Object System.Diagnostics.ProcessStartInfo
+    $pinfo.FileName               = $Command
+    $pinfo.Arguments              = $Arguments -join ' '
+    $pinfo.RedirectStandardOutput = $true
+    $pinfo.RedirectStandardError  = $true
+    $pinfo.UseShellExecute        = $false
+    $pinfo.CreateNoWindow         = $true
+    $pinfo.WorkingDirectory       = $PSScriptRoot
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $pinfo
+
+    # Stream stdout and stderr asynchronously
+    $stdoutEvent = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action {
+        if ($null -ne $EventArgs.Data -and $EventArgs.Data -ne '') {
+            $line = $EventArgs.Data
+            # Show pip progress lines and key status lines
+            if ($line -match 'Installing|Collecting|Downloading|Building|Using|Successfully|Requirement|Preparing') {
+                [Console]::WriteLine("        $line")
+            }
+        }
+    }
+    $stderrEvent = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {
+        if ($null -ne $EventArgs.Data -and $EventArgs.Data -ne '') {
+            $line = $EventArgs.Data
+            if ($line -match 'WARNING|ERROR|error') {
+                [Console]::ForegroundColor = 'Yellow'
+                [Console]::WriteLine("        $line")
+                [Console]::ResetColor()
+            }
+        }
+    }
+
+    $proc.Start() | Out-Null
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
+    $proc.WaitForExit()
+
+    Unregister-Event -SourceIdentifier $stdoutEvent.Name
+    Unregister-Event -SourceIdentifier $stderrEvent.Name
+
+    if ($proc.ExitCode -ne 0) {
+        throw ("Command '{0} {1}' failed with exit code {2}" -f $Command, ($Arguments -join ' '), $proc.ExitCode)
+    }
+}
+
+# -- 1. Check Python ----------------------------------------------------
 Write-Step "Checking Python..."
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) {
@@ -36,7 +112,7 @@ if (-not $py) {
 $pyVer = python --version 2>&1
 Write-OK $pyVer
 
-# ── 2. Check Git ──────────────────────────────────────────────────────
+# -- 2. Check Git -------------------------------------------------------
 Write-Step "Checking Git..."
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
@@ -46,21 +122,20 @@ if (-not $git) {
 $gitVer = git --version 2>&1
 Write-OK $gitVer
 
-# ── 3. Install Chocolatey (if missing) ────────────────────────────────
-Write-Step "Checking Chocolatey..."
+# -- 3. Install Chocolatey + make (if missing) --------------------------
+Write-Step "Checking Chocolatey and make..."
 $choco = Get-Command choco -ErrorAction SilentlyContinue
 if ($choco) {
     Write-Skip "Chocolatey already installed."
 } else {
-    Write-Host "    Installing Chocolatey (requires Admin)..." -ForegroundColor Yellow
+    Write-Host "      Installing Chocolatey (requires Admin)..." -ForegroundColor Yellow
 
-    # Check if running as admin
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator
     )
     if (-not $isAdmin) {
         Write-Err "Chocolatey install requires Admin. Re-run this script as Administrator."
-        Write-Host "    Right-click PowerShell -> 'Run as Administrator' -> run setup.ps1 again." -ForegroundColor Yellow
+        Write-Host "      Right-click PowerShell -> 'Run as Administrator' -> run setup.ps1 again." -ForegroundColor Yellow
         exit 1
     }
 
@@ -81,13 +156,11 @@ if ($choco) {
     }
 }
 
-# ── 4. Install make (if missing) ─────────────────────────────────────
-Write-Step "Checking make..."
 $mk = Get-Command make -ErrorAction SilentlyContinue
 if ($mk) {
     Write-Skip "make already installed."
 } else {
-    Write-Host "    Installing make via Chocolatey..." -ForegroundColor Yellow
+    Write-Host "      Installing make via Chocolatey..." -ForegroundColor Yellow
 
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator
@@ -97,7 +170,8 @@ if ($mk) {
         exit 1
     }
 
-    choco install make -y
+    Invoke-Verbose -Label "choco" -Command "choco" -Arguments @("install", "make", "-y", "--verbose")
+
     # Refresh PATH
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("Path", "User")
@@ -111,12 +185,13 @@ if ($mk) {
     }
 }
 
-# ── 5. Create virtual environment ────────────────────────────────────
+# -- 4. Create virtual environment --------------------------------------
 Write-Step "Setting up virtual environment..."
 $venvPath = Join-Path $PSScriptRoot ".venv"
 if (Test-Path (Join-Path $venvPath "Scripts\python.exe")) {
     Write-Skip ".venv already exists."
 } else {
+    Write-Host "      Creating .venv..." -ForegroundColor DarkGray
     python -m venv $venvPath
     Write-OK "Created .venv"
 }
@@ -126,22 +201,29 @@ $activateScript = Join-Path $venvPath "Scripts\Activate.ps1"
 . $activateScript
 Write-OK "Activated .venv"
 
-# ── 6. Install project dependencies ──────────────────────────────────
-Write-Step "Installing project dependencies..."
-python -m pip install --upgrade pip --quiet
-pip install -e ".[dev,infra]" --quiet
+# -- 5. Upgrade pip -----------------------------------------------------
+Write-Step "Upgrading pip..."
+Invoke-Verbose -Label "pip" -Command "python" -Arguments @("-m", "pip", "install", "--upgrade", "pip", "--verbose")
+Write-OK "pip upgraded."
+
+# -- 6. Install project dependencies ------------------------------------
+Write-Step "Installing project dependencies (dev + infra extras)..."
+Write-Host "      This may take a few minutes -- streaming output below:" -ForegroundColor Yellow
+Invoke-Verbose -Label "pip" -Command "pip" -Arguments @("install", "-e", ".[dev,infra]", "--verbose")
 Write-OK "Dependencies installed (dev + infra extras)."
 
-# ── 7. Install pre-commit hooks ──────────────────────────────────────
+# -- 7. Install pre-commit hooks ----------------------------------------
 Write-Step "Installing git hooks..."
-pre-commit install --hook-type pre-commit --hook-type commit-msg
+Invoke-Verbose -Label "hooks" -Command "pre-commit" -Arguments @("install", "--hook-type", "pre-commit", "--hook-type", "commit-msg")
 Write-OK "Pre-commit + commit-msg hooks installed."
 
-# ── 8. Summary ───────────────────────────────────────────────────────
+# -- Done ---------------------------------------------------------------
 Write-Host ""
-Write-Host "============================================" -ForegroundColor Green
-Write-Host "  Setup complete! You're ready to go.       " -ForegroundColor Green
-Write-Host "============================================" -ForegroundColor Green
+Write-Host "  [####################] 100% -- All steps complete!" -ForegroundColor Magenta
+Write-Host ""
+Write-Host "  ============================================" -ForegroundColor Green
+Write-Host "    Setup complete! You're ready to go.       " -ForegroundColor Green
+Write-Host "  ============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Activate venv:   .venv\Scripts\Activate.ps1"
 Write-Host "  Available tasks: make help"
