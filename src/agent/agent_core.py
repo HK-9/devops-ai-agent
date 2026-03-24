@@ -143,11 +143,8 @@ class DevOpsAgent:
         Returns:
             A tuple of (response_text, turn_count).
         """
+        # tool_defs = self._mcp.get_tools_for_agent()
         tool_defs = self._mcp.get_tools_for_agent()
-        if is_alarm:
-            # Exclude list_ec2_instances for alarm flows — Nova Lite loops
-            # on it instead of following step-by-step instructions.
-            tool_defs = [t for t in tool_defs if t["name"] != "list_ec2_instances"]
         # Always use inline agent mode — invoke_agent requires separate
         # IAM permissions that are not configured for this deployment.
         use_registered_agent = False

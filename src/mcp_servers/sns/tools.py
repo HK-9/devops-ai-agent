@@ -43,8 +43,17 @@ async def send_alert_with_failover(subject: str, message: str) -> dict[str, Any]
     # ── Primary: Teams ───────────────────────────────────────────────
     if teams_url:
         try:
+            card = {
+                "type": "AdaptiveCard",
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "body": [
+                    {"type": "TextBlock", "text": f"**{subject}**", "weight": "Bolder", "size": "Medium"},
+                    {"type": "TextBlock", "text": message, "wrap": True},
+                ],
+            }
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(teams_url, json={"text": f"**{subject}**\n\n{message}"})
+                resp = await client.post(teams_url, json=card)
                 resp.raise_for_status()
             logger.info("Alert delivered to Teams: %s", subject)
             return {

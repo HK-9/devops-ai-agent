@@ -8,7 +8,12 @@ infrastructure.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+# Ensure the project root is on sys.path so `infra` and `src` are importable
+# when CDK runs `python infra/app.py` from the project root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import aws_cdk as cdk
 
@@ -53,3 +58,4 @@ agent_runner = AgentRunnerStack(
 )
 
 app.synth()
+ 

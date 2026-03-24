@@ -38,8 +38,19 @@ async def post_plain_message(text: str, webhook_url: str | None = None) -> dict[
     if not url:
         return {"ok": False, "error": "TEAMS_WEBHOOK_URL is not configured"}
 
-    payload = {"text": text}
-    return await _post(url, payload)
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": [
+            {
+                "type": "TextBlock",
+                "text": text,
+                "wrap": True,
+            }
+        ],
+    }
+    return await _post(url, card)
 
 
 async def post_adaptive_card(card_body: list[dict[str, Any]], webhook_url: str | None = None) -> dict[str, Any]:
@@ -56,21 +67,14 @@ async def post_adaptive_card(card_body: list[dict[str, Any]], webhook_url: str |
     if not url:
         return {"ok": False, "error": "TEAMS_WEBHOOK_URL is not configured"}
 
-    payload = {
-        "type": "message",
-        "attachments": [
-            {
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": {
-                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                    "type": "AdaptiveCard",
-                    "version": "1.4",
-                    "body": card_body,
-                },
-            }
-        ],
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": card_body,
     }
-    return await _post(url, payload)
+    
+    return await _post(url, card)
 
 
 def build_incident_card(

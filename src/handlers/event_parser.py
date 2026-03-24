@@ -95,8 +95,29 @@ def parse_eventbridge_alarm(event: dict[str, Any]) -> AlarmEvent:
     )
 
 
+# ── Metric-type detection ────────────────────────────────────────────────
+
+_MEMORY_INDICATORS = {"mem_used_percent", "memory", "mem"}
+_DISK_INDICATORS = {"disk_used_percent", "disk", "diskspace"}
+
+
+def _detect_alarm_type(alarm: AlarmEvent) -> str:
+    """Classify the alarm as 'cpu', 'memory', or 'disk' based on metric/name."""
+    metric_lower = alarm.metric_name.lower()
+    name_lower = alarm.alarm_name.lower()
+
+    if any(ind in metric_lower or ind in name_lower for ind in _MEMORY_INDICATORS):
+        return "memory"
+    if any(ind in metric_lower or ind in name_lower for ind in _DISK_INDICATORS):
+        return "disk"
+    return "cpu"
+
+
 def build_agent_prompt_from_alarm(alarm: AlarmEvent) -> str:
     """Convert a parsed alarm event into a natural-language prompt for the agent.
+
+    Generates metric-specific investigation steps depending on whether
+    the alarm is for CPU, memory, or disk.
 
     Args:
         alarm: Parsed :class:`AlarmEvent`.
@@ -105,17 +126,51 @@ def build_agent_prompt_from_alarm(alarm: AlarmEvent) -> str:
         A prompt string suitable for AgentCore invocation.
     """
     severity = "CRITICAL" if "GreaterThanThreshold" in alarm.comparison_operator else "WARNING"
+    alarm_type = _detect_alarm_type(alarm)
 
-    return (
+    header = (
         f"A CloudWatch alarm fired for instance {alarm.instance_id}. "
         f"Alarm: {alarm.alarm_name}. Reason: {alarm.reason}. "
         f"Severity: {severity}.\n\n"
         f"You MUST call these tools in this exact order. "
         f"Do NOT call list_ec2_instances.\n\n"
+    )
+
+    if alarm_type == "memory":
+        return header + (
+            f"1. Call get_memory_metrics with instance_id=\"{alarm.instance_id}\" "
+            f"and minutes=30\n"
+            f"2. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
+            f"3. Call send_alert_with_failover with "
+            f"subject=\"HIGH MEMORY: {alarm.instance_id}\" and a message "
+            f"containing: the memory metrics from step 1, instance details "
+            f"from step 2, AND a \"Recommended Actions\" section with "
+            f"concrete numbered remediation steps the engineer should take "
+            f"to fix the high memory issue\n"
+        )
+
+    if alarm_type == "disk":
+        return header + (
+            f"1. Call get_disk_usage with instance_id=\"{alarm.instance_id}\" "
+            f"and minutes=30\n"
+            f"2. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
+            f"3. Call send_alert_with_failover with "
+            f"subject=\"DISK FULL: {alarm.instance_id}\" and a message "
+            f"containing: the disk usage from step 1, instance details "
+            f"from step 2, AND a \"Recommended Actions\" section with "
+            f"concrete numbered remediation steps the engineer should take "
+            f"to free up disk space\n"
+        )
+
+    # Default: CPU
+    return header + (
         f"1. Call get_cpu_metrics with instance_id=\"{alarm.instance_id}\" "
         f"and period_minutes=30\n"
         f"2. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
         f"3. Call send_alert_with_failover with "
         f"subject=\"HIGH CPU: {alarm.instance_id}\" and a message "
-        f"containing the CPU metrics from step 1 and instance details from step 2\n"
+        f"containing: the CPU metrics from step 1, instance details "
+        f"from step 2, AND a \"Recommended Actions\" section with "
+        f"concrete numbered remediation steps the engineer should take "
+        f"to fix the high CPU issue\n"
     )

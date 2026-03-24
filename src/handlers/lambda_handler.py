@@ -14,8 +14,15 @@ import uuid
 from typing import Any
 
 from src.agent.agent_core import DevOpsAgent
-from src.handlers.event_parser import build_agent_prompt_from_alarm, parse_eventbridge_alarm
+from src.handlers.event_parser import _detect_alarm_type, build_agent_prompt_from_alarm, parse_eventbridge_alarm
 from src.utils.aws_helpers import setup_logging
+
+# Emoji + label for each alarm type
+_ALARM_LABELS: dict[str, tuple[str, str]] = {
+    "cpu":    ("\U0001f6a8", "CPU Alert"),
+    "memory": ("\U0001f9e0", "Memory Alert"),
+    "disk":   ("\U0001f4be", "Disk Alert"),
+}
 
 logger = setup_logging("lambda-handler")
 
@@ -73,6 +80,25 @@ async def _async_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "statusCode": 400,
             "body": json.dumps({"error": f"Event parse error: {exc}"}),
         }
+    
+    # ── Guaranteed immediate notification ──────────────────────────
+    # Send directly to Teams the moment the alarm fires — this does NOT
+    # depend on the LLM reasoning loop, so delivery is guaranteed.
+    alarm_type = _detect_alarm_type(alarm)
+    emoji, label = _ALARM_LABELS.get(alarm_type, ("\U0001f6a8", "Alert"))
+    logger.info("Sending immediate %s notification for alarm: %s", label, alarm.alarm_name)
+    await send_alert_with_failover(
+        subject=f"{emoji} {label}: {alarm.alarm_name}",
+        message=(
+            f"Instance: {alarm.instance_id}\n"
+            f"Alarm: {alarm.alarm_name}\n"
+            f"Type: {alarm_type.upper()}\n"
+            f"Reason: {alarm.reason}\n"
+            f"Region: {alarm.region}\n"
+            f"Time: {alarm.timestamp}\n\n"
+            f"The DevOps Agent is now investigating and will follow up with detailed metrics."
+        ),
+    )
 
     # ── Invoke the agent ─────────────────────────────────────────────
     agent = await _get_agent()

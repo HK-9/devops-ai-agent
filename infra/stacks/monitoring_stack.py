@@ -1,29 +1,29 @@
 """
 Monitoring Stack — CloudWatch alarms and EventBridge rules.
-
-Creates CPU utilization alarms and an EventBridge rule that triggers
-the agent Lambda when an alarm fires.
+ 
+Creates CPU, memory, and disk utilization alarms and an EventBridge
+rule that triggers the agent Lambda when any alarm fires.
 """
-
+ 
 from __future__ import annotations
-
+ 
 import aws_cdk as cdk
 from aws_cdk import aws_cloudwatch as cw
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_lambda as _lambda
 from constructs import Construct
-
-
+ 
+ 
 class MonitoringStack(cdk.Stack):
     """CloudWatch alarms + EventBridge rules for automated monitoring."""
-
+ 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:  # type: ignore[no-untyped-def]
         super().__init__(scope, construct_id, **kwargs)
-
+ 
         # ── Parameters ───────────────────────────────────────────────
         monitored_instance_id = self.node.try_get_context("monitored_instance_id") or "i-0000000000example"
-        
+ 
         instance_id_param = cdk.CfnParameter(
             self,
             "MonitoredInstanceId",
@@ -31,16 +31,32 @@ class MonitoringStack(cdk.Stack):
             description="EC2 Instance ID to monitor",
             default=monitored_instance_id,
         )
-
+ 
         cpu_threshold = cdk.CfnParameter(
             self,
             "CpuThreshold",
             type="Number",
             description="CPU utilization threshold (%)",
-            default=80,
+            default=90,
         )
-
-        # ── CloudWatch Alarm ─────────────────────────────────────────
+ 
+        memory_threshold = cdk.CfnParameter(
+            self,
+            "MemoryThreshold",
+            type="Number",
+            description="Memory utilization threshold (%)",
+            default=85,
+        )
+ 
+        disk_threshold = cdk.CfnParameter(
+            self,
+            "DiskThreshold",
+            type="Number",
+            description="Disk usage threshold (%)",
+            default=90,
+        )
+ 
+        # ── CPU Alarm ────────────────────────────────────────────────
         self.cpu_alarm = cw.Alarm(
             self,
             "HighCpuAlarm",
@@ -61,27 +77,80 @@ class MonitoringStack(cdk.Stack):
             comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cw.TreatMissingData.MISSING,
         )
-
+ 
+        # ── Memory Alarm (CWAgent) ───────────────────────────────────
+        self.memory_alarm = cw.Alarm(
+            self,
+            "HighMemoryAlarm",
+            alarm_name="devops-agent-high-memory",
+            alarm_description=(
+                f"Memory utilization exceeds {memory_threshold.value_as_number}% "
+                f"for instance {instance_id_param.value_as_string}"
+            ),
+            metric=cw.Metric(
+                namespace="CWAgent",
+                metric_name="mem_used_percent",
+                dimensions_map={"InstanceId": instance_id_param.value_as_string},
+                period=cdk.Duration.minutes(5),
+                statistic="Average",
+            ),
+            threshold=memory_threshold.value_as_number,
+            evaluation_periods=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.MISSING,
+        )
+ 
+        # ── Disk Alarm (CWAgent) ─────────────────────────────────────
+        self.disk_alarm = cw.Alarm(
+            self,
+            "HighDiskAlarm",
+            alarm_name="devops-agent-high-disk",
+            alarm_description=(
+                f"Disk usage exceeds {disk_threshold.value_as_number}% "
+                f"for instance {instance_id_param.value_as_string}"
+            ),
+            metric=cw.Metric(
+                namespace="CWAgent",
+                metric_name="disk_used_percent",
+                dimensions_map={
+                    "InstanceId": instance_id_param.value_as_string,
+                    "path": "/",
+                },
+                period=cdk.Duration.minutes(5),
+                statistic="Average",
+            ),
+            threshold=disk_threshold.value_as_number,
+            evaluation_periods=2,
+            comparison_operator=cw.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cw.TreatMissingData.MISSING,
+        )
+ 
         # ── EventBridge Rule ─────────────────────────────────────────
         self.alarm_rule = events.Rule(
             self,
             "AlarmStateChangeRule",
             rule_name="devops-agent-alarm-trigger",
-            description="Fires when a monitored CloudWatch alarm enters ALARM state",
+            description="Fires when any monitored CloudWatch alarm enters ALARM state",
             event_pattern=events.EventPattern(
                 source=["aws.cloudwatch"],
                 detail_type=["CloudWatch Alarm State Change"],
                 detail={
                     "state": {"value": ["ALARM"]},
-                    "alarmName": [self.cpu_alarm.alarm_name],
+                    "alarmName": [
+                        self.cpu_alarm.alarm_name,
+                        self.memory_alarm.alarm_name,
+                        self.disk_alarm.alarm_name,
+                    ],
                 },
             ),
         )
-
+ 
         # ── Outputs ──────────────────────────────────────────────────
-        cdk.CfnOutput(self, "AlarmArn", value=self.cpu_alarm.alarm_arn)
+        cdk.CfnOutput(self, "CpuAlarmArn", value=self.cpu_alarm.alarm_arn)
+        cdk.CfnOutput(self, "MemoryAlarmArn", value=self.memory_alarm.alarm_arn)
+        cdk.CfnOutput(self, "DiskAlarmArn", value=self.disk_alarm.alarm_arn)
         cdk.CfnOutput(self, "EventRuleArn", value=self.alarm_rule.rule_arn)
-
+ 
     def add_lambda_target(self, fn: _lambda.Function) -> None:
         """Wire the EventBridge rule to invoke a Lambda function."""
         self.alarm_rule.add_target(targets.LambdaFunction(fn))
