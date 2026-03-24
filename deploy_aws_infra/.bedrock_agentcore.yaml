@@ -1,0 +1,31 @@
+default_agent: mcp_server
+agents:
+  mcp_server:
+    name: mcp_server
+    entrypoint: mcp_server.py
+    platform: linux/arm64
+    container_runtime: docker
+    aws:
+      execution_role: arn:aws:iam::650251690796:role/aws-infra-server
+      account: '650251690796'
+      region: ap-southeast-2
+      ecr_repository: 650251690796.dkr.ecr.ap-southeast-2.amazonaws.com/bedrock_agentcore-mcp_server
+      ecr_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+      protocol_configuration:
+        server_protocol: MCP
+      observability:
+        enabled: true
+    bedrock_agentcore:
+      agent_id: null
+      agent_arn: null
+      agent_session_id: null
+    authorizer_configuration:
+      customJWTAuthorizer:
+        discoveryUrl: https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_OmD4OzAYI/.well-known/openid-configuration
+        allowedClients:
+        - 5blfslp7o1shoe86g2o0ltbnm8
+        allowedAudience:
+        - 5blfslp7o1shoe86g2o0ltbnm8
+    oauth_configuration: null

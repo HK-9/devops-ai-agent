@@ -38,6 +38,9 @@ infra = [
     "aws-cdk-lib>=2.150.0",
     "constructs>=10.3.0",
 ]
+deploy = [
+    "bedrock-agentcore-starter-toolkit",
+]
 
 [project.scripts]
 mcp-aws-infra = "src.mcp_servers.aws_infra.server:main"
