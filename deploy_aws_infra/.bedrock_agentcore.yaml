@@ -18,8 +18,8 @@ agents:
       observability:
         enabled: true
     bedrock_agentcore:
-      agent_id: null
-      agent_arn: null
+      agent_id: mcp_server-4kjU5oAHWM
+      agent_arn: arn:aws:bedrock-agentcore:ap-southeast-2:650251690796:runtime/mcp_server-4kjU5oAHWM
       agent_session_id: null
     authorizer_configuration:
       customJWTAuthorizer:
