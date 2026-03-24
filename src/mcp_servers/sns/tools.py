@@ -77,7 +77,7 @@ async def send_alert_with_failover(subject: str, message: str) -> dict[str, Any]
         }
 
     try:
-        sns_client = boto3.client("sns", region_name="ap-southeast-2")
+        sns_client = boto3.client("sns", region_name=os.environ.get("AWS_REGION", "ap-southeast-2"))
         sns_client.publish(
             TopicArn=sns_topic_arn,
             Subject=subject,
