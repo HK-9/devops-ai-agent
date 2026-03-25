@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.14-slim
 WORKDIR /app
 
 # Install system dependencies if needed
@@ -40,4 +40,4 @@ EXPOSE 8080
 
 # Use the full module path
 
-CMD ["opentelemetry-instrument", "python", "-m", "mcp_server"]
+CMD ["opentelemetry-instrument", "python", "-m", "teams_server"]

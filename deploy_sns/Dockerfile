@@ -40,4 +40,4 @@ EXPOSE 8080
 
 # Use the full module path
 
-CMD ["opentelemetry-instrument", "python", "-m", "mcp_server"]
+CMD ["opentelemetry-instrument", "python", "-m", "sns_server"]

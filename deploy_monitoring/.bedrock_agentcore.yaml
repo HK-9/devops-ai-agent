@@ -1,0 +1,25 @@
+default_agent: monitoring_server
+agents:
+  monitoring_server:
+    name: monitoring_server
+    entrypoint: monitoring_server.py
+    platform: linux/amd64
+    container_runtime: docker
+    aws:
+      execution_role: arn:aws:iam::650251690796:role/aws-infra-server
+      account: '650251690796'
+      region: ap-southeast-2
+      ecr_repository: 650251690796.dkr.ecr.ap-southeast-2.amazonaws.com/bedrock_agentcore-monitoring_server
+      ecr_auto_create: false
+      network_configuration:
+        network_mode: PUBLIC
+      protocol_configuration:
+        server_protocol: MCP
+      observability:
+        enabled: true
+    bedrock_agentcore:
+      agent_id: monitoring_server-CI86d62MYP
+      agent_arn: arn:aws:bedrock-agentcore:ap-southeast-2:650251690796:runtime/monitoring_server-CI86d62MYP
+      agent_session_id: null
+    authorizer_configuration: null
+    oauth_configuration: null
