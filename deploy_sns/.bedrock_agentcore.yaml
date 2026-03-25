@@ -26,6 +26,6 @@ agents:
         discoveryUrl: https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_OmD4OzAYI/.well-known/openid-configuration
         allowedClients:
         - 5blfslp7o1shoe86g2o0ltbnm8
-        allowedAudience:
-        - 5blfslp7o1shoe86g2o0ltbnm8
+        - 3i9cn8o8huu4rlpo8e46tr51ap
+        - 3oner8qr0qcquviof4vo9hidfm
     oauth_configuration: null
