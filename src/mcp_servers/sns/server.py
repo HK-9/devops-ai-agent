@@ -14,7 +14,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from src.mcp_servers.sns.tools import send_alert_with_failover
+from src.mcp_servers.sns.tools import request_approval, send_alert_with_failover
 from src.utils.aws_helpers import setup_logging
 
 logger = setup_logging("mcp-server.sns")
@@ -47,6 +47,40 @@ TOOLS = [
             "required": ["subject", "message"],
         },
     ),
+    Tool(
+        name="request_approval",
+        description=(
+            "Request human approval for a MAJOR remediation action. "
+            "Sends an email/Teams message with clickable APPROVE and REJECT links. "
+            "Use for: instance restart, instance resize, EBS expansion, or any "
+            "destructive action. Supported action_type values: restart, disk_cleanup, "
+            "kill_process, cache_clear."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": "Target EC2 instance ID.",
+                },
+                "action_type": {
+                    "type": "string",
+                    "description": "Kind of action: restart, disk_cleanup, kill_process, cache_clear.",
+                    "enum": ["restart", "disk_cleanup", "kill_process", "cache_clear"],
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this remediation is proposed (include metric data).",
+                },
+                "details": {
+                    "type": "string",
+                    "description": "Extra context, e.g. PID for kill_process.",
+                    "default": "",
+                },
+            },
+            "required": ["instance_id", "action_type", "reason"],
+        },
+    ),
 ]
 
 
@@ -66,6 +100,13 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await send_alert_with_failover(
             subject=arguments["subject"],
             message=arguments["message"],
+        )
+    elif name == "request_approval":
+        result = await request_approval(
+            instance_id=arguments["instance_id"],
+            action_type=arguments["action_type"],
+            reason=arguments["reason"],
+            details=arguments.get("details", ""),
         )
     else:
         result = {"error": True, "message": f"Unknown tool: {name}"}
@@ -88,3 +129,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+ 

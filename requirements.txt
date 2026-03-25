@@ -1,5 +1,20 @@
+# Core dependencies
 boto3>=1.35.0
 mcp>=1.0.0
 httpx>=0.27.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
+flask>=3.0.0
+
+# CDK infrastructure (for deployment)
+aws-cdk-lib>=2.150.0
+constructs>=10.3.0
+
+# Development & Testing
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+moto[ec2,cloudwatch,sns]>=5.0.0
+ruff>=0.5.0
+mypy>=1.10.0
+boto3-stubs[ec2,cloudwatch,sns]>=1.35.0
+ 

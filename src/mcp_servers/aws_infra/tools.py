@@ -1,12 +1,14 @@
 """
 AWS Infrastructure MCP tools.
 
-Provides EC2 management tools: list, describe, and restart instances.
+Provides EC2 management tools: list, describe, restart instances,
+and SSM RunCommand for remote diagnostics / remediation.
 Each function is designed to be registered as an MCP tool.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from src.utils.aws_helpers import get_client, safe_boto_call, setup_logging
@@ -193,3 +195,170 @@ def _state_changes(resp: dict[str, Any]) -> list[dict[str, str]]:
             "current_state": sc["CurrentState"]["Name"],
         })
     return changes
+
+
+# ── SSM RunCommand Tools ─────────────────────────────────────────────────
+
+
+async def run_ssm_command(
+    instance_id: str,
+    command: str,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """Run a shell command on an EC2 instance via AWS Systems Manager.
+
+    The instance must have the SSM Agent running and an IAM role with
+    ``AmazonSSMManagedInstanceCore`` attached.
+
+    Args:
+        instance_id:     Target EC2 instance ID.
+        command:         Shell command to execute (e.g. ``top -bn1 | head -20``).
+        timeout_seconds: Max wait time for the command to finish.
+
+    Returns:
+        Dict with ``status``, ``stdout``, ``stderr``, and ``command_id``.
+    """
+    ssm = get_client("ssm")
+
+    # ── Send command ─────────────────────────────────────────────────
+    send_resp = safe_boto_call(
+        ssm.send_command,
+        InstanceIds=[instance_id],
+        DocumentName="AWS-RunShellScript",
+        Parameters={"commands": [command]},
+        TimeoutSeconds=timeout_seconds,
+        Comment=f"DevOps Agent: {command[:80]}",
+    )
+    if "error" in send_resp:
+        return send_resp
+
+    command_id = send_resp["Command"]["CommandId"]
+    logger.info("SSM command %s sent to %s: %s", command_id, instance_id, command[:120])
+
+    # ── Poll for result ──────────────────────────────────────────────
+    deadline = time.time() + timeout_seconds
+    status = "Pending"
+    while time.time() < deadline:
+        time.sleep(2)
+        inv_resp = safe_boto_call(
+            ssm.get_command_invocation,
+            CommandId=command_id,
+            InstanceId=instance_id,
+        )
+        if "error" in inv_resp:
+            # Command not yet registered — retry
+            if "InvocationDoesNotExist" in inv_resp.get("message", ""):
+                continue
+            return inv_resp
+
+        status = inv_resp.get("Status", "Pending")
+        if status in ("Success", "Failed", "Cancelled", "TimedOut"):
+            stdout = inv_resp.get("StandardOutputContent", "")
+            stderr = inv_resp.get("StandardErrorContent", "")
+            logger.info(
+                "SSM command %s on %s finished: %s (stdout=%d bytes)",
+                command_id, instance_id, status, len(stdout),
+            )
+            return {
+                "command_id": command_id,
+                "instance_id": instance_id,
+                "status": status,
+                "stdout": stdout[:4000],  # truncate for LLM context
+                "stderr": stderr[:2000],
+            }
+
+    return {
+        "command_id": command_id,
+        "instance_id": instance_id,
+        "status": "Timeout",
+        "error": True,
+        "message": f"Command did not complete within {timeout_seconds}s",
+    }
+
+
+async def diagnose_instance(instance_id: str) -> dict[str, Any]:
+    """Run a suite of diagnostic commands on an EC2 instance via SSM.
+
+    Collects: top processes (CPU + memory), disk usage, and active
+    connections.  Returns a combined diagnostic report.
+
+    Args:
+        instance_id: Target EC2 instance ID.
+
+    Returns:
+        Dict with ``diagnostics`` containing output from each check.
+    """
+    checks = {
+        "top_cpu": "ps aux --sort=-%cpu | head -15",
+        "top_memory": "ps aux --sort=-%mem | head -15",
+        "disk_usage": "df -h",
+        "memory_info": "free -h",
+        "uptime_load": "uptime",
+        "active_connections": "ss -tunap | head -30",
+    }
+
+    diagnostics: dict[str, Any] = {}
+    for name, cmd in checks.items():
+        result = await run_ssm_command(instance_id, cmd, timeout_seconds=30)
+        diagnostics[name] = {
+            "command": cmd,
+            "status": result.get("status", "unknown"),
+            "output": result.get("stdout", result.get("message", "")),
+            "error": result.get("stderr", ""),
+        }
+
+    logger.info("Diagnostics completed for %s (%d checks)", instance_id, len(diagnostics))
+    return {"instance_id": instance_id, "diagnostics": diagnostics}
+
+
+async def remediate_high_cpu(instance_id: str, pid: str) -> dict[str, Any]:
+    """Kill a runaway process on an instance by PID.
+
+    Args:
+        instance_id: Target EC2 instance ID.
+        pid:         Process ID to kill.
+
+    Returns:
+        Result of the kill command.
+    """
+    logger.info("Killing PID %s on %s", pid, instance_id)
+    return await run_ssm_command(instance_id, f"sudo kill -9 {pid}", timeout_seconds=15)
+
+
+async def remediate_disk_full(instance_id: str) -> dict[str, Any]:
+    """Clean up common disk space consumers on an instance.
+
+    Removes old logs (>7 days), package caches, and temp files.
+
+    Args:
+        instance_id: Target EC2 instance ID.
+
+    Returns:
+        Result showing space freed.
+    """
+    cleanup_script = (
+        "echo '=== Before ===' && df -h / && "
+        "sudo find /var/log -name '*.gz' -mtime +7 -delete 2>/dev/null; "
+        "sudo find /tmp -type f -mtime +2 -delete 2>/dev/null; "
+        "sudo apt-get clean 2>/dev/null || sudo yum clean all 2>/dev/null; "
+        "sudo journalctl --vacuum-time=3d 2>/dev/null; "
+        "echo '=== After ===' && df -h /"
+    )
+    logger.info("Running disk cleanup on %s", instance_id)
+    return await run_ssm_command(instance_id, cleanup_script, timeout_seconds=60)
+
+
+async def remediate_high_memory(instance_id: str, pid: str) -> dict[str, Any]:
+    """Kill a memory-hogging process on an instance by PID.
+
+    Args:
+        instance_id: Target EC2 instance ID.
+        pid:         Process ID to kill.
+
+    Returns:
+        Result of the kill + memory status after.
+    """
+    script = f"sudo kill -9 {pid} && sleep 2 && free -h"
+    logger.info("Killing memory-hog PID %s on %s", pid, instance_id)
+    return await run_ssm_command(instance_id, script, timeout_seconds=15)
+ 
