@@ -22,6 +22,22 @@
                 "logs:PutLogEvents"
             ],
             "Resource": "arn:aws:logs:ap-southeast-2:650251690796:log-group:/aws/bedrock-agentcore/*"
+        },
+        {
+            "Sid": "ECRAuth",
+            "Effect": "Allow",
+            "Action": ["ecr:GetAuthorizationToken"],
+            "Resource": "*"
+        },
+        {
+            "Sid": "ECRPull",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchGetImage",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchCheckLayerAvailability"
+            ],
+            "Resource": "arn:aws:ecr:ap-southeast-2:650251690796:repository/bedrock_agentcore-devops_agent"
         }
     ]
 }
