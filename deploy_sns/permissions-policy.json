@@ -2,6 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "SNSPublish",
       "Effect": "Allow",
       "Action": [
         "sns:Publish"
@@ -9,6 +10,7 @@
       "Resource": "*"
     },
     {
+      "Sid": "CloudWatchLogs",
       "Effect": "Allow",
       "Action": [
         "logs:CreateLogGroup",

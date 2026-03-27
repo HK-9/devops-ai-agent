@@ -8,7 +8,10 @@
                 "bedrock:InvokeModel",
                 "bedrock:InvokeModelWithResponseStream"
             ],
-            "Resource": "arn:aws:bedrock:ap-southeast-2::foundation-model/amazon.nova-lite-v1:0"
+            "Resource": [
+                "arn:aws:bedrock:ap-southeast-2::foundation-model/amazon.nova-lite-v1:0",
+                "arn:aws:bedrock:ap-southeast-2::foundation-model/amazon.nova-pro-v1:0"
+            ]
         },
         {
             "Sid": "CloudWatchLogs",
