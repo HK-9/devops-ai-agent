@@ -125,7 +125,96 @@ def create_agent(mcp_client: MCPClient) -> Agent:
     return agent
 
 
-def main() -> None:
+# ── HTTP server mode (for AgentCore runtime) ─────────────────────────
+
+def run_http_server() -> None:
+    """Start an HTTP server on port 8080 for AgentCore invocations.
+
+    AgentCore sends POST requests with JSON body to the container.
+    Expected payload: {"prompt": "..."} or plain text.
+    """
+    import json
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import threading
+
+    mcp_client = create_gateway_mcp_client()
+    agent = create_agent(mcp_client)
+    agent_lock = threading.Lock()
+    logger.info("DevOps Agent HTTP server ready (model=%s, gateway=%s)", MODEL_ID, GATEWAY_URL)
+
+    class AgentHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+
+                # Parse prompt from JSON or use raw body
+                prompt = body
+                try:
+                    data = json.loads(body)
+                    if isinstance(data, dict):
+                        prompt = data.get("prompt", data.get("message", data.get("input", body)))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                if not prompt or not prompt.strip():
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "No prompt provided"}).encode())
+                    return
+
+                logger.info("Received prompt: %s", prompt[:200])
+
+                with agent_lock:
+                    result = agent(prompt.strip())
+
+                response_body = json.dumps({
+                    "response": str(result),
+                    "stop_reason": getattr(result, "stop_reason", "end_turn"),
+                })
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(response_body.encode())
+
+            except Exception as exc:
+                logger.error("Agent error: %s", exc, exc_info=True)
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+        def do_GET(self):
+            """Health check endpoint."""
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "healthy", "agent": "devops_agent"}).encode())
+
+        def log_message(self, format, *args):
+            logger.info(format, *args)
+
+    port = int(os.environ.get("PORT", "8080"))
+    server = HTTPServer(("0.0.0.0", port), AgentHandler)
+    logger.info("Listening on 0.0.0.0:%d", port)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        try:
+            mcp_client.stop(None, None, None)
+        except Exception:
+            pass
+
+
+# ── CLI mode (for local testing) ─────────────────────────────────────
+
+def run_cli() -> None:
     """Interactive CLI mode for local testing."""
     mcp_client = create_gateway_mcp_client()
     agent = create_agent(mcp_client)
@@ -157,6 +246,14 @@ def main() -> None:
             mcp_client.stop(None, None, None)
         except Exception:
             pass
+
+
+def main() -> None:
+    """Entry point: HTTP server in container, CLI locally."""
+    if os.environ.get("DOCKER_CONTAINER") == "1":
+        run_http_server()
+    else:
+        run_cli()
 
 
 if __name__ == "__main__":
