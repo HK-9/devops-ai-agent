@@ -153,7 +153,10 @@ def main() -> None:
                 logger.error("Agent error: %s", exc, exc_info=True)
                 print(f"\n[Error] {exc}\n")
     finally:
-        mcp_client.stop()
+        try:
+            mcp_client.stop(None, None, None)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
