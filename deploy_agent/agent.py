@@ -169,8 +169,21 @@ def run_http_server() -> None:
                 with agent_lock:
                     result = agent(prompt.strip())
 
+                # Extract text from AgentResult
+                result_text = ""
+                try:
+                    if hasattr(result, "message") and result.message:
+                        content = result.message.get("content", [])
+                        for block in content:
+                            if isinstance(block, dict) and "text" in block:
+                                result_text += block["text"]
+                    if not result_text:
+                        result_text = repr(result)
+                except Exception:
+                    result_text = repr(result)
+
                 response_body = json.dumps({
-                    "response": str(result),
+                    "response": result_text,
                     "stop_reason": getattr(result, "stop_reason", "end_turn"),
                 })
 
