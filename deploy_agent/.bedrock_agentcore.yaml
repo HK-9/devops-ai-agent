@@ -3,7 +3,7 @@ agents:
   devops_agent:
     name: devops_agent
     entrypoint: agent.py
-    platform: linux/amd64
+    platform: linux/arm64
     container_runtime: docker
     aws:
       execution_role: arn:aws:iam::650251690796:role/devops-agent-runner
