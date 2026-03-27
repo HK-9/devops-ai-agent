@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+.git
+.env
+.venv
+setup_infra.py
+trust-policy.json
+permissions-policy.json
+ecr-policy.json
+README.md
