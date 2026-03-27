@@ -41,7 +41,8 @@ infra = [
     "constructs>=10.3.0",
 ]
 deploy = [
-    "bedrock-agentcore-starter-toolkit",
+    "bedrock-agentcore>=0.1.0",
+    "bedrock-agentcore-starter-toolkit>=0.1.0",
 ]
 
 [project.scripts]
