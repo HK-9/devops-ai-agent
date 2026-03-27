@@ -123,7 +123,7 @@ def deploy_runtime(tag: str):
         print(f"Creating new runtime: {AGENT_NAME}")
         resp = ac.create_agent_runtime(
             agentRuntimeName=AGENT_NAME,
-            description="DevOps AI Agent — Strands agent with MCP Gateway tools",
+            description="DevOps AI Agent - Strands agent with MCP Gateway tools",
             **runtime_params,
         )
         runtime_id = resp["agentRuntimeId"]
@@ -165,7 +165,7 @@ def run_local(tag: str):
     full_tag = f"{ECR_URI}:{tag}"
     run([
         "docker", "run", "--rm", "-it",
-        "--platform", "linux/amd64",
+        "--platform", "linux/arm64",
         "-e", f"GATEWAY_URL={GATEWAY_URL}",
         "-e", f"AWS_REGION={REGION}",
         "-e", "MODEL_ID=amazon.nova-lite-v1:0",
