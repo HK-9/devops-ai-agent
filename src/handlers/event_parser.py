@@ -131,8 +131,8 @@ def build_agent_prompt_from_alarm(alarm: AlarmEvent) -> str:
 
     header = (
         f"A CloudWatch alarm fired for instance {alarm.instance_id}. "
-        f"Alarm: {alarm.alarm_name}. Reason: {alarm.reason}. "
-        f"Severity: {severity}.\n\n"
+        f"Alarm: {alarm.alarm_name}. Metric: {alarm.metric_name}. "
+        f"Reason: {alarm.reason}. Severity: {severity}.\n\n"
         f"You MUST follow these steps IN ORDER. "
         f"Do NOT call list_ec2_instances.\n"
         f"IMPORTANT: For MAJOR issues you MUST call the request_approval tool "

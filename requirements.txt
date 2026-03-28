@@ -15,7 +15,7 @@ constructs>=10.3.0
 # Development & Testing
 pytest>=8.2.0
 pytest-asyncio>=0.23.0
-moto[ec2,cloudwatch,sns]>=5.0.0
+moto[ec2,cloudwatch,sns,ssm,sts]>=5.0.0
 ruff>=0.5.0
 mypy>=1.10.0
-boto3-stubs[ec2,cloudwatch,sns]>=1.35.0
+boto3-stubs[ec2,cloudwatch,sns,ssm]>=1.35.0
