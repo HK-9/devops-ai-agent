@@ -25,6 +25,7 @@ dependencies = [
     "flask>=3.0.0",
     "strands-agents>=1.0.0",
     "strands-agents-tools>=0.1.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]

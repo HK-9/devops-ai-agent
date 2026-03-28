@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/python:3.14-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 WORKDIR /app
 
 # Install system dependencies if needed
