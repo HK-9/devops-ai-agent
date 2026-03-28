@@ -5,17 +5,80 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 import re
 from datetime import datetime, timezone
 from typing import Any
 
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
 from flask import Flask, jsonify, render_template, request, session
 
 from src.agent.agent_core import DevOpsAgent
 from src.handlers.event_parser import build_agent_prompt_from_alarm, parse_eventbridge_alarm
 
 logger = logging.getLogger(__name__)
+
+# CloudWatch alarm names we monitor
+MONITORED_ALARMS = [
+    "devops-agent-high-cpu",
+    "devops-agent-high-memory",
+    "devops-agent-high-disk",
+]
+
+
+def get_cloudwatch_alarms() -> dict[str, Any]:
+    """Fetch current state of monitored CloudWatch alarms.
+    
+    Returns dict with 'alarms' list and 'stats' summary.
+    """
+    region = os.environ.get("AWS_REGION", "ap-southeast-2")
+    
+    try:
+        cw = boto3.client("cloudwatch", region_name=region)
+        response = cw.describe_alarms(AlarmNames=MONITORED_ALARMS)
+        
+        alarms = []
+        stats = {"total": 0, "alarm": 0, "ok": 0, "insufficient_data": 0}
+        
+        for alarm in response.get("MetricAlarms", []):
+            state = alarm.get("StateValue", "UNKNOWN")
+            alarm_data = {
+                "name": alarm.get("AlarmName"),
+                "state": state,
+                "metric": alarm.get("MetricName"),
+                "threshold": alarm.get("Threshold"),
+                "description": alarm.get("AlarmDescription", ""),
+                "state_reason": alarm.get("StateReason", ""),
+                "state_updated": alarm.get("StateUpdatedTimestamp", "").isoformat() if alarm.get("StateUpdatedTimestamp") else "",
+            }
+            alarms.append(alarm_data)
+            stats["total"] += 1
+            
+            if state == "ALARM":
+                stats["alarm"] += 1
+            elif state == "OK":
+                stats["ok"] += 1
+            else:
+                stats["insufficient_data"] += 1
+        
+        return {"alarms": alarms, "stats": stats, "error": None}
+        
+    except NoCredentialsError:
+        logger.warning("AWS credentials not configured")
+        return {
+            "alarms": [],
+            "stats": {"total": 0, "alarm": 0, "ok": 0, "insufficient_data": 0},
+            "error": "AWS credentials not configured"
+        }
+    except ClientError as e:
+        logger.warning(f"CloudWatch API error: {e}")
+        return {
+            "alarms": [],
+            "stats": {"total": 0, "alarm": 0, "ok": 0, "insufficient_data": 0},
+            "error": str(e)
+        }
 
 _incidents: list[dict[str, Any]] = []
 _audit_logs: list[dict[str, Any]] = []
@@ -151,9 +214,18 @@ async def run_with_agent(callback):
         await agent.shutdown()
 
 
-def build_stats() -> dict[str, int]:
-    """Compute dashboard stats."""
+def build_stats() -> dict[str, Any]:
+    """Compute dashboard stats from CloudWatch alarms."""
+    cw_data = get_cloudwatch_alarms()
+    cw_stats = cw_data.get("stats", {})
+    
     return {
+        "total_alarms": cw_stats.get("total", 0),
+        "active_alarms": cw_stats.get("alarm", 0),
+        "ok_alarms": cw_stats.get("ok", 0),
+        "insufficient_data": cw_stats.get("insufficient_data", 0),
+        "aws_error": cw_data.get("error"),
+        # Keep incident stats for simulations
         "total_incidents": len(_incidents),
         "resolved": sum(1 for i in _incidents if i.get("status") == "resolved"),
         "escalated": sum(1 for i in _incidents if i.get("status") == "escalated"),
@@ -320,10 +392,13 @@ def register_routes(app: Flask):
 
     @app.route("/")
     def dashboard():
+        cw_data = get_cloudwatch_alarms()
         return render_template(
             "dashboard.html",
             incidents=_incidents[-20:],
             stats=build_stats(),
+            alarms=cw_data.get("alarms", []),
+            aws_error=cw_data.get("error"),
         )
 
     @app.route("/chat")
@@ -455,6 +530,12 @@ def register_routes(app: Flask):
     def list_incidents():
         return jsonify({"incidents": _incidents})
 
+    @app.route("/api/alarms", methods=["GET"])
+    def list_alarms():
+        """Fetch current CloudWatch alarm states."""
+        cw_data = get_cloudwatch_alarms()
+        return jsonify(cw_data)
+
     @app.route("/api/incidents/<incident_id>", methods=["GET"])
     def get_incident(incident_id: str):
         for incident in _incidents:
@@ -545,3 +626,4 @@ def register_routes(app: Flask):
                 "version": "0.1.0",
             }
         )
+ 

@@ -24,35 +24,36 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 import boto3
 
-# ── Configuration ────────────────────────────────────────────────────────
-# All tuneable values in one place. Override via env vars if needed.
+# Ensure scripts/ is on the path so `lib` is importable
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
-ACCOUNT = os.environ.get("AWS_ACCOUNT_ID", "650251690796")
-AGENT_NAME = "devops_agent"
-
-ECR_REPO = f"bedrock_agentcore-{AGENT_NAME}"
-ECR_URI = f"{ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com/{ECR_REPO}"
-ROLE_NAME = "devops-agent-runner"
-ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/{ROLE_NAME}"
-
-DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deploy_agent"
-PLATFORM = "linux/arm64"
-
-GATEWAY_URL = os.environ.get(
-    "GATEWAY_URL",
-    f"https://devopsagentgatewayv2-hvvsllrsvw"
-    f".gateway.bedrock-agentcore.{REGION}.amazonaws.com/mcp",
+from lib.config import (
+    REGION,
+    ACCOUNT,
+    AGENT_NAME,
+    AGENT_ECR_REPO,
+    AGENT_ROLE,
+    GATEWAY_URL,
+    MODEL_ID,
+    PLATFORM,
+    ecr_uri,
+    role_arn,
 )
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
+from lib.console import log, run, Colors
+from lib.aws import ac_client, ecr_login, tail_logs
+from lib.docker import build_image, push_image
+from lib.runtime import update_runtime, wait_for_ready
+from lib.version import git_sha, git_branch, next_version, preflight_checks
+
+ECR_URI = ecr_uri(AGENT_ECR_REPO)
+ROLE_ARN = role_arn(AGENT_ROLE)
+DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deploy_agent"
 
 # Environment variables injected into the container at runtime
 RUNTIME_ENV = {
@@ -63,26 +64,12 @@ RUNTIME_ENV = {
 }
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    print(f"  $ {' '.join(cmd)}")
-    result = subprocess.run(cmd, **kwargs)
-    if result.returncode != 0:
-        print(f"  ERROR: exit code {result.returncode}")
-        sys.exit(result.returncode)
-    return result
-
-
-def _ac():
-    """Return a bedrock-agentcore-control client."""
-    return boto3.client("bedrock-agentcore-control", region_name=REGION)
-
+# ── Agent-specific helpers ───────────────────────────────────────────────
 
 def _find_runtime_id() -> str | None:
     """Find the runtime ID for our agent, or None."""
     try:
-        for rt in _ac().list_agent_runtimes().get("agentRuntimes", []):
+        for rt in ac_client().list_agent_runtimes().get("agentRuntimes", []):
             if rt.get("agentRuntimeName") == AGENT_NAME:
                 return rt["agentRuntimeId"]
     except Exception:
@@ -95,153 +82,99 @@ def _get_runtime_info() -> dict | None:
     rid = _find_runtime_id()
     if not rid:
         return None
-    return _ac().get_agent_runtime(agentRuntimeId=rid)
+    return ac_client().get_agent_runtime(agentRuntimeId=rid)
 
 
-def _log_group(runtime_id: str) -> str:
-    return f"/aws/bedrock-agentcore/runtimes/{runtime_id}-DEFAULT"
+# ── Agent deploy step (create or update) ─────────────────────────────────
 
-
-# ── Pipeline Steps ───────────────────────────────────────────────────────
-
-def step_ecr_login():
-    print("\n[1/4] ECR Login")
-    pw = subprocess.run(
-        ["aws", "ecr", "get-login-password", "--region", REGION],
-        capture_output=True, text=True, check=True,
-    )
-    subprocess.run(
-        ["docker", "login", "--username", "AWS", "--password-stdin",
-         f"{ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com"],
-        input=pw.stdout, text=True, check=True,
-    )
-    print("  Authenticated.")
-
-
-def step_build(tag: str, no_cache: bool = False) -> str:
-    print(f"\n[2/4] Build image ({PLATFORM})")
-    full_tag = f"{ECR_URI}:{tag}"
-    cmd = [
-        "docker", "build",
-        "--platform", PLATFORM,
-        "-t", full_tag,
-        "-t", f"{ECR_URI}:latest",
-    ]
-    if no_cache:
-        cmd.append("--no-cache")
-        print("  (--no-cache: forcing full rebuild)")
-    cmd.append(str(DEPLOY_DIR))
-    _run(cmd)
-    return full_tag
-
-
-def step_push(tag: str):
-    print("\n[3/4] Push to ECR")
-    _run(["docker", "push", f"{ECR_URI}:{tag}"])
-    _run(["docker", "push", f"{ECR_URI}:latest"])
-
-
-def step_deploy(tag: str) -> str:
-    print("\n[4/4] Deploy to AgentCore")
-    ac = _ac()
+def _step_deploy(tag: str) -> str:
+    """Create or update the agent runtime. Returns the runtime ID."""
+    ac = ac_client()
     image_uri = f"{ECR_URI}:{tag}"
-
-    # Include tag in env vars to force container restart on every deploy
     env = {**RUNTIME_ENV, "DEPLOY_VERSION": tag}
-
-    runtime_params = dict(
-        agentRuntimeArtifact={"containerConfiguration": {"containerUri": image_uri}},
-        roleArn=ROLE_ARN,
-        networkConfiguration={"networkMode": "PUBLIC"},
-        environmentVariables=env,
-    )
 
     existing_id = _find_runtime_id()
     if existing_id:
-        print(f"  Updating runtime {existing_id} -> {tag}")
-        ac.update_agent_runtime(agentRuntimeId=existing_id, **runtime_params)
+        log(f"\n[4/4] Updating runtime {existing_id} -> {tag}")
+        # Use read-merge-write via the shared runtime module
+        update_runtime(
+            existing_id, AGENT_ECR_REPO, tag,
+            AGENT_ROLE, protocol=None,  # Agent is HTTP, not MCP
+        )
         return existing_id
     else:
-        print(f"  Creating new runtime: {AGENT_NAME}")
+        log(f"\n[4/4] Creating new runtime: {AGENT_NAME}")
         resp = ac.create_agent_runtime(
             agentRuntimeName=AGENT_NAME,
             description="DevOps AI Agent — Strands agent with MCP Gateway tools",
-            **runtime_params,
+            agentRuntimeArtifact={"containerConfiguration": {"containerUri": image_uri}},
+            roleArn=ROLE_ARN,
+            networkConfiguration={"networkMode": "PUBLIC"},
+            environmentVariables=env,
         )
         rid = resp["agentRuntimeId"]
-        print(f"  Created: {rid}")
+        log(f"  Created: {rid}", Colors.GREEN)
         return rid
-
-
-def step_wait(runtime_id: str, timeout: int = 300) -> bool:
-    print("\n  Waiting for READY...")
-    ac = _ac()
-    start = time.time()
-    last_status = ""
-
-    while time.time() - start < timeout:
-        resp = ac.get_agent_runtime(agentRuntimeId=runtime_id)
-        status = resp["status"]
-        uri = resp.get("agentRuntimeArtifact", {}).get(
-            "containerConfiguration", {}
-        ).get("containerUri", "")
-
-        if status != last_status:
-            elapsed = int(time.time() - start)
-            print(f"  [{elapsed}s] {status}  image={uri}")
-            last_status = status
-
-        if status == "READY":
-            arn = resp.get("agentRuntimeArn", "")
-            print(f"\n  Runtime READY")
-            print(f"  ID:  {runtime_id}")
-            print(f"  ARN: {arn}")
-            print(f"  Image: {uri}")
-            return True
-        if status == "FAILED":
-            print(f"\n  FAILED: {resp.get('statusReasons', 'unknown')}")
-            return False
-
-        time.sleep(10)
-
-    print(f"\n  Timeout after {timeout}s (last status: {last_status})")
-    return False
 
 
 # ── Commands ─────────────────────────────────────────────────────────────
 
 def cmd_deploy(args):
     """Full deployment pipeline: build -> push -> deploy -> wait."""
-    tag = args.tag or time.strftime("%Y%m%d-%H%M%S")
-    print(f"Deploying {AGENT_NAME} with tag: {tag}")
+    tag = args.tag or next_version(AGENT_ECR_REPO)
+    log(f"Deploying {AGENT_NAME} with tag: {tag}")
+    log(f"  Commit: {git_sha()} ({git_branch()})")
 
-    # Pre-flight: check docker is running
-    try:
-        subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True, check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        print("ERROR: Docker is not running. Start Docker Desktop first.")
+    if args.dry_run:
+        log(f"\n  [DRY RUN] No changes will be made.", Colors.YELLOW)
+        log(f"  Image: {ECR_URI}:{tag}")
+        info = _get_runtime_info()
+        if info:
+            cur_uri = (
+                info.get("agentRuntimeArtifact", {})
+                .get("containerConfiguration", {})
+                .get("containerUri", "n/a")
+            )
+            proto = info.get("protocolConfiguration", {})
+            auth = info.get("authorizerConfiguration", {})
+            log(f"  Current: {cur_uri}")
+            log(f"  Protocol: {proto}")
+            log(f"  Auth:     {'present' if auth else 'MISSING'}")
+        return
+
+    preflight_checks()
+    ecr_login()
+
+    log(f"\n[2/4] Build image ({PLATFORM})")
+    ok = build_image(AGENT_ECR_REPO, tag, DEPLOY_DIR, no_cache=args.no_cache)
+    if not ok:
+        log("Build failed.", Colors.RED)
         sys.exit(1)
 
-    step_ecr_login()
-    step_build(tag, no_cache=args.no_cache)
-    step_push(tag)
-    runtime_id = step_deploy(tag)
-    ok = step_wait(runtime_id)
+    log(f"\n[3/4] Push to ECR")
+    ok = push_image(AGENT_ECR_REPO, tag)
+    if not ok:
+        log("Push failed.", Colors.RED)
+        sys.exit(1)
+
+    runtime_id = _step_deploy(tag)
+    log(f"\n  Waiting for READY...")
+    ok = wait_for_ready(runtime_id)
 
     if ok:
-        print(f"\n{'=' * 60}")
-        print(f"  Deployment complete!  tag={tag}")
-        print(f"  Test with:")
-        print(f'    python scripts/deploy_agent.py invoke "List EC2 instances"')
-        print(f"  Tail logs:")
-        print(f"    python scripts/deploy_agent.py logs")
-        print(f"{'=' * 60}")
+        info = ac_client().get_agent_runtime(agentRuntimeId=runtime_id)
+        log(f"\n{'=' * 60}")
+        log(f"  Deployment complete!  tag={tag}")
+        log(f"  Runtime ID: {runtime_id}")
+        log(f"  ARN: {info.get('agentRuntimeArn', 'n/a')}")
+        log(f"  Test with:")
+        log(f'    python scripts/deploy_agent.py invoke "List EC2 instances"')
+        log(f"  Tail logs:")
+        log(f"    python scripts/deploy_agent.py logs")
+        log(f"{'=' * 60}")
     else:
-        print("\nDeployment failed. Check logs:")
-        print(f"  python scripts/deploy_agent.py logs")
+        log("\nDeployment failed. Check logs:", Colors.RED)
+        log("  python scripts/deploy_agent.py logs")
         sys.exit(1)
 
 
@@ -249,7 +182,7 @@ def cmd_status(args):
     """Show current runtime status."""
     info = _get_runtime_info()
     if not info:
-        print(f"No runtime found for '{AGENT_NAME}'")
+        log(f"No runtime found for '{AGENT_NAME}'")
         return
 
     uri = info.get("agentRuntimeArtifact", {}).get(
@@ -257,90 +190,46 @@ def cmd_status(args):
     ).get("containerUri", "n/a")
     tag = uri.rsplit(":", 1)[-1] if ":" in uri else "n/a"
 
-    print(f"Agent:   {AGENT_NAME}")
-    print(f"ID:      {info.get('agentRuntimeId')}")
-    print(f"Status:  {info['status']}")
-    print(f"Tag:     {tag}")
-    print(f"Image:   {uri}")
-    print(f"ARN:     {info.get('agentRuntimeArn', 'n/a')}")
+    log(f"Agent:   {AGENT_NAME}")
+    log(f"ID:      {info.get('agentRuntimeId')}")
+    log(f"Status:  {info['status']}")
+    log(f"Tag:     {tag}")
+    log(f"Image:   {uri}")
+    log(f"ARN:     {info.get('agentRuntimeArn', 'n/a')}")
 
 
 def cmd_logs(args):
     """Tail recent CloudWatch logs, skipping health-check noise."""
     rid = _find_runtime_id()
     if not rid:
-        print(f"No runtime found for '{AGENT_NAME}'")
+        log(f"No runtime found for '{AGENT_NAME}'")
         return
-
-    logs_client = boto3.client("logs", region_name=REGION)
-    log_group = _log_group(rid)
-    minutes = args.minutes or 5
-    end_time = int(time.time() * 1000)
-    start_time = end_time - (minutes * 60 * 1000)
-
-    print(f"Tailing {log_group} (last {minutes} min)\n")
-    try:
-        events = logs_client.filter_log_events(
-            logGroupName=log_group,
-            startTime=start_time,
-            endTime=end_time,
-            limit=100,
-        )
-    except logs_client.exceptions.ResourceNotFoundException:
-        print("Log group not found yet. The runtime may not have started.")
-        return
-
-    count = 0
-    for evt in events.get("events", []):
-        msg = evt["message"]
-        # Parse OTEL JSON envelope
-        try:
-            data = json.loads(msg)
-            body = data.get("body", "")
-            sev = data.get("severityText", "")
-        except (json.JSONDecodeError, TypeError):
-            body = msg
-            sev = ""
-
-        # Skip health check noise
-        body = str(body)
-        if "GET /ping" in body:
-            continue
-
-        ts = time.strftime(
-            "%H:%M:%S", time.localtime(evt["timestamp"] / 1000)
-        )
-        print(f"[{ts}] {sev:5s} {body[:500]}")
-        count += 1
-
-    if count == 0:
-        print("(no non-healthcheck log entries found)")
+    tail_logs(rid, minutes=args.minutes or 5)
 
 
 def cmd_invoke(args):
     """Send a prompt to the deployed agent."""
     info = _get_runtime_info()
     if not info:
-        print(f"No runtime found for '{AGENT_NAME}'")
+        log(f"No runtime found for '{AGENT_NAME}'")
         sys.exit(1)
 
     arn = info.get("agentRuntimeArn")
     rid = info.get("agentRuntimeId")
     prompt = args.prompt
     if not prompt:
-        print("ERROR: provide a prompt string")
+        log("ERROR: provide a prompt string", Colors.RED)
         sys.exit(1)
 
     ac = boto3.client("bedrock-agentcore", region_name=REGION)
-    print(f"Invoking {AGENT_NAME} ({rid})...")
-    print(f"Prompt: {prompt[:200]}\n")
+    log(f"Invoking {AGENT_NAME} ({rid})...")
+    log(f"Prompt: {prompt[:200]}\n")
 
     try:
         resp = ac.invoke_agent_runtime(
             agentRuntimeArn=arn,
             payload=json.dumps({"prompt": prompt}),
         )
-        # Response body is in 'response' (StreamingBody), not 'payload'
         raw = resp.get("response") or resp.get("payload", b"")
         if hasattr(raw, "read"):
             body = raw.read().decode("utf-8")
@@ -354,18 +243,21 @@ def cmd_invoke(args):
         except (json.JSONDecodeError, TypeError):
             print(body or "(empty response)")
     except Exception as exc:
-        print(f"Invocation error: {exc}")
-        print("\nCheck logs: python scripts/deploy_agent.py logs")
+        log(f"Invocation error: {exc}", Colors.RED)
+        log("\nCheck logs: python scripts/deploy_agent.py logs")
         sys.exit(1)
 
 
 def cmd_local(args):
     """Build and run the container locally for testing."""
     tag = args.tag or "local"
-    step_build(tag, no_cache=getattr(args, "no_cache", False))
+    ok = build_image(AGENT_ECR_REPO, tag, DEPLOY_DIR, no_cache=getattr(args, "no_cache", False))
+    if not ok:
+        log("Build failed.", Colors.RED)
+        sys.exit(1)
 
-    print(f"\nRunning locally ({PLATFORM})...")
-    _run([
+    log(f"\nRunning locally ({PLATFORM})...")
+    run([
         "docker", "run", "--rm", "-it",
         "--platform", PLATFORM,
         "-p", "8080:8080",
@@ -374,7 +266,7 @@ def cmd_local(args):
         "-e", f"MODEL_ID={MODEL_ID}",
         "-v", f"{Path.home()}/.aws:/home/bedrock_agentcore/.aws:ro",
         f"{ECR_URI}:{tag}",
-    ])
+    ], check=True)
 
 
 def cmd_setup(args):
@@ -384,11 +276,11 @@ def cmd_setup(args):
 
     # ECR repository
     try:
-        ecr_client.describe_repositories(repositoryNames=[ECR_REPO])
-        print(f"ECR repo '{ECR_REPO}' exists")
+        ecr_client.describe_repositories(repositoryNames=[AGENT_ECR_REPO])
+        log(f"ECR repo '{AGENT_ECR_REPO}' exists")
     except ecr_client.exceptions.RepositoryNotFoundException:
-        ecr_client.create_repository(repositoryName=ECR_REPO)
-        print(f"Created ECR repo '{ECR_REPO}'")
+        ecr_client.create_repository(repositoryName=AGENT_ECR_REPO)
+        log(f"Created ECR repo '{AGENT_ECR_REPO}'")
 
     # IAM role
     trust = {
@@ -400,27 +292,27 @@ def cmd_setup(args):
         }],
     }
     try:
-        iam_client.get_role(RoleName=ROLE_NAME)
-        print(f"IAM role '{ROLE_NAME}' exists")
+        iam_client.get_role(RoleName=AGENT_ROLE)
+        log(f"IAM role '{AGENT_ROLE}' exists")
     except iam_client.exceptions.NoSuchEntityException:
         iam_client.create_role(
-            RoleName=ROLE_NAME,
+            RoleName=AGENT_ROLE,
             AssumeRolePolicyDocument=json.dumps(trust),
             Description="Execution role for DevOps Agent on AgentCore",
         )
-        print(f"Created IAM role '{ROLE_NAME}'")
+        log(f"Created IAM role '{AGENT_ROLE}'")
 
     # Attach permissions policy from file
     policy_file = DEPLOY_DIR / "permissions-policy.json"
     if policy_file.exists():
         iam_client.put_role_policy(
-            RoleName=ROLE_NAME,
+            RoleName=AGENT_ROLE,
             PolicyName="devops-agent-permissions",
             PolicyDocument=policy_file.read_text(),
         )
-        print(f"Attached permissions policy from {policy_file.name}")
+        log(f"Attached permissions policy from {policy_file.name}")
 
-    print("\nSetup complete. Run: python scripts/deploy_agent.py deploy")
+    log("\nSetup complete. Run: python scripts/deploy_agent.py deploy")
 
 
 # ── CLI entrypoint ───────────────────────────────────────────────────────
@@ -445,8 +337,12 @@ examples:
 
     # deploy
     p_deploy = sub.add_parser("deploy", help="Build, push, and deploy the agent")
-    p_deploy.add_argument("--tag", default=None, help="Image tag (default: auto timestamp)")
-    p_deploy.add_argument("--no-cache", action="store_true", help="Force full Docker rebuild (no layer cache)")
+    p_deploy.add_argument("--tag", default=None,
+                          help="Image tag (default: auto-versioned v{N}-{sha})")
+    p_deploy.add_argument("--no-cache", action="store_true",
+                          help="Force full Docker rebuild (no layer cache)")
+    p_deploy.add_argument("--dry-run", action="store_true",
+                          help="Preview what would be deployed without making changes")
     p_deploy.set_defaults(func=cmd_deploy)
 
     # status

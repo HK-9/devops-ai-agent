@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     sns_topic_arn: str = ""
 
     alert_email: str = ""
+    # ── Cognito / OAuth (Gateway auth) ──────────────────────────────────
+    pool_id: str = ""
+    client_id: str = ""
+    discovery_url: str = ""
+
     # ── Timeouts & Limits ────────────────────────────────────────────────
     tool_timeout_seconds: int = 30
     lambda_timeout_seconds: int = 300

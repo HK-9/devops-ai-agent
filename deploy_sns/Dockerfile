@@ -24,6 +24,12 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 ENV AWS_REGION=ap-southeast-2
 ENV AWS_DEFAULT_REGION=ap-southeast-2
 
+# Approval workflow configuration
+ENV APPROVALS_TABLE=devops-agent-approvals
+ENV APPROVAL_API_URL=https://nrp0zqvt76.execute-api.ap-southeast-2.amazonaws.com
+ENV SCHEDULER_ROLE_ARN=arn:aws:iam::650251690796:role/devops-agent-scheduler-invoke-role
+ENV APPROVAL_HANDLER_ARN=arn:aws:lambda:ap-southeast-2:650251690796:function:devops-agent-approval-handler
+
 
 # Signal that this is running in Docker for host binding logic
 ENV DOCKER_CONTAINER=1

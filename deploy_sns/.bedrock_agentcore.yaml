@@ -3,7 +3,7 @@ agents:
   sns_server:
     name: sns_server
     entrypoint: sns_server.py
-    platform: linux/amd64
+    platform: linux/arm64
     container_runtime: docker
     aws:
       execution_role: arn:aws:iam::650251690796:role/aws-infra-server

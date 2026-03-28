@@ -47,4 +47,4 @@ class TestBuildAgentPrompt:
         assert "devops-agent-high-cpu" in prompt
         assert "CRITICAL" in prompt
         assert "CPUUtilization" in prompt
-        assert "Teams" in prompt
+        assert "send_alert_with_failover" in prompt

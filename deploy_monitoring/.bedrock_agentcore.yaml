@@ -3,7 +3,7 @@ agents:
   monitoring_server:
     name: monitoring_server
     entrypoint: monitoring_server.py
-    platform: linux/amd64
+    platform: linux/arm64
     container_runtime: docker
     aws:
       execution_role: arn:aws:iam::650251690796:role/aws-infra-server

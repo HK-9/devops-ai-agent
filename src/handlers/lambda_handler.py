@@ -16,6 +16,7 @@ from typing import Any
 from src.agent.agent_core import DevOpsAgent
 from src.handlers.event_parser import _detect_alarm_type, build_agent_prompt_from_alarm, parse_eventbridge_alarm
 from src.utils.aws_helpers import setup_logging
+from src.mcp_servers.sns.tools import send_alert_with_failover
 
 # Emoji + label for each alarm type
 _ALARM_LABELS: dict[str, tuple[str, str]] = {
