@@ -19,6 +19,8 @@ from strands.models.bedrock import BedrockModel
 from strands.tools.mcp import MCPClient
 from mcp.client.streamable_http import streamablehttp_client
 
+from sigv4_auth import BotoSigV4Auth
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -29,7 +31,7 @@ logger = logging.getLogger("devops-agent")
 
 GATEWAY_URL = os.environ.get(
     "GATEWAY_URL",
-    "https://devopsagentgatewayv2-hvvsllrsvw.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
+    "https://devopsagentgatewayv3-ar4lmz2x6t.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
 )
 MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
@@ -101,13 +103,15 @@ Never answer from conversation memory alone.
 def create_gateway_mcp_client() -> MCPClient:
     """Create an MCP client connected to the AgentCore Gateway.
 
-    The gateway uses NONE auth. MCP server runtimes behind the gateway
-    are protected by Cognito JWT — the gateway handles that authentication
-    internally via the registered OAuth credential provider.
+    The gateway uses AWS_IAM auth.  Every outgoing request is signed
+    with SigV4 using the agent runtime's IAM role credentials.
+    MCP server runtimes behind the gateway are protected separately
+    via the registered OAuth credential provider.
     """
     logger.info("Connecting to AgentCore Gateway: %s", GATEWAY_URL)
+    sigv4 = BotoSigV4Auth(region=AWS_REGION, service="bedrock-agentcore")
     return MCPClient(
-        lambda: streamablehttp_client(url=GATEWAY_URL)
+        lambda: streamablehttp_client(url=GATEWAY_URL, auth=sigv4)
     )
 
 
