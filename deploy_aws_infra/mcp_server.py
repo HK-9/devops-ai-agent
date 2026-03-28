@@ -70,7 +70,7 @@ async def restart_ec2_instance_tool(instance_id: str) -> str:
 @mcp.tool()
 async def run_ssm_command_tool(
     instance_id: str,
-    command: str,
+    shell_command: str,
     timeout_seconds: int = 60,
 ) -> str:
     """Run a shell command on an EC2 instance via SSM.
@@ -79,7 +79,7 @@ async def run_ssm_command_tool(
     """
     result = await run_ssm_command(
         instance_id=instance_id,
-        command=command,
+        command=shell_command,
         timeout_seconds=timeout_seconds,
     )
     return json.dumps(result, indent=2, default=str)
