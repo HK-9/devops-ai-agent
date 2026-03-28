@@ -8,10 +8,13 @@ Nova Lite as the foundation model with Strands' native reasoning loop.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from typing import Any
 
 from strands import Agent
+from strands.agent.agent import null_callback_handler
 from strands.models.bedrock import BedrockModel
 from strands.tools.mcp import MCPClient
 from mcp.client.streamable_http import streamablehttp_client
@@ -108,9 +111,43 @@ def create_gateway_mcp_client() -> MCPClient:
     )
 
 
-def create_agent(mcp_client: MCPClient) -> Agent:
+# ── Nova-safe Bedrock model ─────────────────────────────────────────
+
+class NovaBedrockModel(BedrockModel):
+    """BedrockModel subclass that normalizes Nova Lite streaming chunks.
+
+    Amazon Nova Lite sends tool-use input as a pre-parsed dict in
+    ConverseStream deltas, but the Strands SDK event loop expects
+    string chunks it can concatenate.  This subclass intercepts the
+    raw stream and converts any dict tool inputs to JSON strings
+    before they reach the SDK's handle_content_block_delta().
+    """
+
+    @staticmethod
+    def _normalize_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
+        """Ensure toolUse input deltas are always JSON strings."""
+        cbd = chunk.get("contentBlockDelta")
+        if cbd is not None:
+            tool_use = cbd.get("delta", {}).get("toolUse")
+            if tool_use is not None and isinstance(tool_use.get("input"), dict):
+                tool_use["input"] = json.dumps(tool_use["input"])
+        return chunk
+
+    def _stream(self, callback, messages, tool_specs=None, system_prompt_content=None, tool_choice=None):
+        """Override to normalize streaming chunks before dispatch."""
+        original_callback = callback
+
+        def normalizing_callback(event=None):
+            if event is not None:
+                event = self._normalize_chunk(event)
+            original_callback(event)
+
+        super()._stream(normalizing_callback, messages, tool_specs, system_prompt_content, tool_choice)
+
+
+def create_agent(mcp_client: MCPClient, http_mode: bool = False) -> Agent:
     """Build the Strands Agent with Bedrock model and MCP tools."""
-    model = BedrockModel(
+    model = NovaBedrockModel(
         region_name=AWS_REGION,
         model_id=MODEL_ID,
         max_tokens=4096,
@@ -121,6 +158,7 @@ def create_agent(mcp_client: MCPClient) -> Agent:
         model=model,
         tools=[mcp_client],
         system_prompt=SYSTEM_PROMPT,
+        callback_handler=null_callback_handler if http_mode else None,
     )
     return agent
 
@@ -138,7 +176,7 @@ def run_http_server() -> None:
     import threading
 
     mcp_client = create_gateway_mcp_client()
-    agent = create_agent(mcp_client)
+    agent = create_agent(mcp_client, http_mode=True)
     agent_lock = threading.Lock()
     logger.info("DevOps Agent HTTP server ready (model=%s, gateway=%s)", MODEL_ID, GATEWAY_URL)
 
@@ -177,10 +215,15 @@ def run_http_server() -> None:
                         for block in content:
                             if isinstance(block, dict) and "text" in block:
                                 result_text += block["text"]
+                            elif isinstance(block, str):
+                                result_text += block
                     if not result_text:
-                        result_text = repr(result)
+                        try:
+                            result_text = json.dumps(result.message, default=str)
+                        except Exception:
+                            result_text = repr(result)
                 except Exception:
-                    result_text = repr(result)
+                    result_text = repr(result) if result else "Agent processing error"
 
                 response_body = json.dumps({
                     "response": result_text,
@@ -193,7 +236,8 @@ def run_http_server() -> None:
                 self.wfile.write(response_body.encode())
 
             except Exception as exc:
-                logger.error("Agent error: %s", exc, exc_info=True)
+                import traceback
+                logger.error("Agent error: %s\n%s", exc, traceback.format_exc())
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()

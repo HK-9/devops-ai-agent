@@ -118,16 +118,20 @@ def step_ecr_login():
     print("  Authenticated.")
 
 
-def step_build(tag: str) -> str:
+def step_build(tag: str, no_cache: bool = False) -> str:
     print(f"\n[2/4] Build image ({PLATFORM})")
     full_tag = f"{ECR_URI}:{tag}"
-    _run([
+    cmd = [
         "docker", "build",
         "--platform", PLATFORM,
         "-t", full_tag,
         "-t", f"{ECR_URI}:latest",
-        str(DEPLOY_DIR),
-    ])
+    ]
+    if no_cache:
+        cmd.append("--no-cache")
+        print("  (--no-cache: forcing full rebuild)")
+    cmd.append(str(DEPLOY_DIR))
+    _run(cmd)
     return full_tag
 
 
@@ -142,11 +146,14 @@ def step_deploy(tag: str) -> str:
     ac = _ac()
     image_uri = f"{ECR_URI}:{tag}"
 
+    # Include tag in env vars to force container restart on every deploy
+    env = {**RUNTIME_ENV, "DEPLOY_VERSION": tag}
+
     runtime_params = dict(
         agentRuntimeArtifact={"containerConfiguration": {"containerUri": image_uri}},
         roleArn=ROLE_ARN,
         networkConfiguration={"networkMode": "PUBLIC"},
-        environmentVariables=RUNTIME_ENV,
+        environmentVariables=env,
     )
 
     existing_id = _find_runtime_id()
@@ -219,7 +226,7 @@ def cmd_deploy(args):
         sys.exit(1)
 
     step_ecr_login()
-    step_build(tag)
+    step_build(tag, no_cache=args.no_cache)
     step_push(tag)
     runtime_id = step_deploy(tag)
     ok = step_wait(runtime_id)
@@ -296,6 +303,7 @@ def cmd_logs(args):
             sev = ""
 
         # Skip health check noise
+        body = str(body)
         if "GET /ping" in body:
             continue
 
@@ -311,11 +319,13 @@ def cmd_logs(args):
 
 def cmd_invoke(args):
     """Send a prompt to the deployed agent."""
-    rid = _find_runtime_id()
-    if not rid:
+    info = _get_runtime_info()
+    if not info:
         print(f"No runtime found for '{AGENT_NAME}'")
         sys.exit(1)
 
+    arn = info.get("agentRuntimeArn")
+    rid = info.get("agentRuntimeId")
     prompt = args.prompt
     if not prompt:
         print("ERROR: provide a prompt string")
@@ -327,15 +337,22 @@ def cmd_invoke(args):
 
     try:
         resp = ac.invoke_agent_runtime(
-            agentRuntimeId=rid,
+            agentRuntimeArn=arn,
             payload=json.dumps({"prompt": prompt}),
         )
-        body = resp.get("payload", b"").read().decode("utf-8")
+        # Response body is in 'response' (StreamingBody), not 'payload'
+        raw = resp.get("response") or resp.get("payload", b"")
+        if hasattr(raw, "read"):
+            body = raw.read().decode("utf-8")
+        elif isinstance(raw, bytes):
+            body = raw.decode("utf-8")
+        else:
+            body = str(raw)
         try:
             data = json.loads(body)
             print(data.get("response", body))
         except (json.JSONDecodeError, TypeError):
-            print(body)
+            print(body or "(empty response)")
     except Exception as exc:
         print(f"Invocation error: {exc}")
         print("\nCheck logs: python scripts/deploy_agent.py logs")
@@ -345,7 +362,7 @@ def cmd_invoke(args):
 def cmd_local(args):
     """Build and run the container locally for testing."""
     tag = args.tag or "local"
-    step_build(tag)
+    step_build(tag, no_cache=getattr(args, "no_cache", False))
 
     print(f"\nRunning locally ({PLATFORM})...")
     _run([
@@ -429,6 +446,7 @@ examples:
     # deploy
     p_deploy = sub.add_parser("deploy", help="Build, push, and deploy the agent")
     p_deploy.add_argument("--tag", default=None, help="Image tag (default: auto timestamp)")
+    p_deploy.add_argument("--no-cache", action="store_true", help="Force full Docker rebuild (no layer cache)")
     p_deploy.set_defaults(func=cmd_deploy)
 
     # status
@@ -448,6 +466,7 @@ examples:
     # local
     p_local = sub.add_parser("local", help="Build and run the container locally")
     p_local.add_argument("--tag", default=None, help="Image tag (default: 'local')")
+    p_local.add_argument("--no-cache", action="store_true", help="Force full Docker rebuild")
     p_local.set_defaults(func=cmd_local)
 
     # setup
