@@ -36,6 +36,18 @@ REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 ACCOUNT = os.environ.get("AWS_ACCOUNT_ID", "650251690796")
 PLATFORM = "linux/arm64"  # AgentCore runtimes require arm64
 
+# Cognito JWT authorizer shared by all MCP server runtimes
+AUTHORIZER_CONFIG = {
+    "customJWTAuthorizer": {
+        "discoveryUrl": "https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_OmD4OzAYI/.well-known/openid-configuration",
+        "allowedClients": [
+            "5blfslp7o1shoe86g2o0ltbnm8",
+            "3i9cn8o8huu4rlpo8e46tr51ap",
+            "3oner8qr0qcquviof4vo9hidfm",
+        ],
+    }
+}
+
 # Each MCP server: deploy_dir_name -> (runtime_name, runtime_id, ecr_repo)
 SERVERS = {
     "aws_infra": {
@@ -177,6 +189,7 @@ def update_runtime(name: str, server: dict, tag: str) -> bool:
             },
             roleArn=_role_arn(server),
             networkConfiguration={"networkMode": "PUBLIC"},
+            authorizerConfiguration=AUTHORIZER_CONFIG,
         )
         _log(f"  Update submitted for {name}", Colors.GREEN)
         return True
