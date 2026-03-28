@@ -34,7 +34,7 @@ import boto3
 
 REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 ACCOUNT = os.environ.get("AWS_ACCOUNT_ID", "650251690796")
-PLATFORM = "linux/amd64"  # MCP servers use amd64
+PLATFORM = "linux/arm64"  # AgentCore runtimes require arm64
 
 # Each MCP server: deploy_dir_name -> (runtime_name, runtime_id, ecr_repo)
 SERVERS = {
