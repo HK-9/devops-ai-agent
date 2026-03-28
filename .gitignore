@@ -11,4 +11,5 @@ __pycache__/
 response.json
 response_model.json
 lambda_response.json
-model_test.jsoncms/
+model_test.json
+cms/
