@@ -12,7 +12,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from tools import send_alert_with_failover
+from tools import send_alert_with_failover, request_approval
 from aws_helpers import setup_logging
 
 logger = setup_logging("mcp-server.sns")
@@ -32,6 +32,26 @@ async def send_alert_with_failover_tool(subject: str, message: str) -> str:
     result = await send_alert_with_failover(
         subject=subject,
         message=message,
+    )
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def request_approval_tool(
+    instance_id: str,
+    action_type: str,
+    reason: str,
+    details: str = "",
+) -> str:
+    """Request human approval for a remediation action via email with
+    clickable APPROVE/REJECT links. Supported action_types: restart,
+    disk_cleanup, kill_process, cache_clear.
+    """
+    result = await request_approval(
+        instance_id=instance_id,
+        action_type=action_type,
+        reason=reason,
+        details=details,
     )
     return json.dumps(result, indent=2, default=str)
 

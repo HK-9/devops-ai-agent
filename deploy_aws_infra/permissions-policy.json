@@ -2,6 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "EC2Management",
       "Effect": "Allow",
       "Action": [
         "ec2:DescribeInstances",
@@ -11,6 +12,16 @@
       "Resource": "*"
     },
     {
+      "Sid": "SSMRunCommand",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand",
+        "ssm:GetCommandInvocation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchLogs",
       "Effect": "Allow",
       "Action": [
         "logs:CreateLogGroup",
