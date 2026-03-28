@@ -11,11 +11,11 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from src.mcp_servers.teams.tools import (
+from tools import (
     create_incident_notification,
     send_teams_message,
 )
-from src.utils.aws_helpers import setup_logging
+from aws_helpers import setup_logging
 
 logger = setup_logging("mcp-server.teams")
 

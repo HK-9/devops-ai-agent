@@ -11,12 +11,12 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from src.mcp_servers.aws_infra.tools import (
+from tools import (
     describe_ec2_instance,
     list_ec2_instances,
     restart_ec2_instance,
 )
-from src.utils.aws_helpers import setup_logging
+from aws_helpers import setup_logging
 
 logger = setup_logging("mcp-server.aws-infra")
 

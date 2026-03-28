@@ -12,8 +12,8 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from src.mcp_servers.sns.tools import send_alert_with_failover
-from src.utils.aws_helpers import setup_logging
+from tools import send_alert_with_failover
+from aws_helpers import setup_logging
 
 logger = setup_logging("mcp-server.sns")
 

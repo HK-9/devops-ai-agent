@@ -12,7 +12,7 @@ from typing import Any
 import boto3
 import httpx
 
-from src.utils.aws_helpers import setup_logging
+from aws_helpers import setup_logging
 
 logger = setup_logging("mcp.sns")
 
@@ -21,23 +21,7 @@ logger = setup_logging("mcp.sns")
 
 
 async def send_alert_with_failover(subject: str, message: str) -> dict[str, Any]:
-    """Send an alert to Teams, failing over to AWS SNS if Teams is unavailable.
-
-    Primary: POST to the Microsoft Teams Webhook URL from the
-    ``TEAMS_WEBHOOK_URL`` environment variable.
-
-    Failover: If the webhook URL is missing or the Teams API returns an
-    error, publish the same *subject* and *message* to the AWS SNS topic
-    whose ARN is in the ``SNS_TOPIC_ARN`` environment variable.
-
-    Args:
-        subject: Alert subject line.
-        message: Alert body text.
-
-    Returns:
-        Dict with ``tool``, ``channel`` ("teams" | "sns" | "none"),
-        and a human-readable ``status`` string.
-    """
+    """Send an alert to Teams, failing over to AWS SNS if Teams is unavailable."""
     teams_url = os.environ.get("TEAMS_WEBHOOK_URL", "").strip()
 
     # ── Primary: Teams ───────────────────────────────────────────────

@@ -12,13 +12,13 @@ from typing import List
 
 from mcp.server.fastmcp import FastMCP
 
-from src.mcp_servers.monitoring.tools import (
+from tools import (
     get_cpu_metrics,
     get_cpu_metrics_for_instances,
     get_disk_usage,
     get_memory_metrics,
 )
-from src.utils.aws_helpers import setup_logging
+from aws_helpers import setup_logging
 
 logger = setup_logging("mcp-server.monitoring")
 
