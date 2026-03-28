@@ -33,6 +33,9 @@ _AWS_ENV_VARS = [
     "AWS_PROFILE",
     "SNS_TOPIC_ARN",
     "TEAMS_WEBHOOK_URL",
+    "APPROVALS_TABLE",
+    "APPROVAL_API_URL",
+ 
 ]
 
 logger = setup_logging("mcp-client")

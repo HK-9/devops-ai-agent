@@ -117,7 +117,8 @@ def build_agent_prompt_from_alarm(alarm: AlarmEvent) -> str:
     """Convert a parsed alarm event into a natural-language prompt for the agent.
 
     Generates metric-specific investigation steps depending on whether
-    the alarm is for CPU, memory, or disk.
+    the alarm is for CPU, memory, or disk.  Includes SSM-based
+    diagnosis and auto-remediation instructions.
 
     Args:
         alarm: Parsed :class:`AlarmEvent`.
@@ -132,45 +133,70 @@ def build_agent_prompt_from_alarm(alarm: AlarmEvent) -> str:
         f"A CloudWatch alarm fired for instance {alarm.instance_id}. "
         f"Alarm: {alarm.alarm_name}. Reason: {alarm.reason}. "
         f"Severity: {severity}.\n\n"
-        f"You MUST call these tools in this exact order. "
-        f"Do NOT call list_ec2_instances.\n\n"
+        f"You MUST follow these steps IN ORDER. "
+        f"Do NOT call list_ec2_instances.\n"
+        f"IMPORTANT: For MAJOR issues you MUST call the request_approval tool "
+        f"(not just send a text message about it). The request_approval tool "
+        f"generates clickable approve/reject links in the email.\n\n"
     )
 
     if alarm_type == "memory":
         return header + (
-            f"1. Call get_memory_metrics with instance_id=\"{alarm.instance_id}\" "
-            f"and minutes=30\n"
-            f"2. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
-            f"3. Call send_alert_with_failover with "
-            f"subject=\"HIGH MEMORY: {alarm.instance_id}\" and a message "
-            f"containing: the memory metrics from step 1, instance details "
-            f"from step 2, AND a \"Recommended Actions\" section with "
-            f"concrete numbered remediation steps the engineer should take "
-            f"to fix the high memory issue\n"
+            f"1. Call diagnose_instance with instance_id=\"{alarm.instance_id}\"\n"
+            f"2. Call get_memory_metrics with instance_id=\"{alarm.instance_id}\" and minutes=30\n"
+            f"3. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
+            f"4. Classify as MINOR or MAJOR:\n"
+            f"   - MINOR = single process using > 50%% memory\n"
+            f"   - MAJOR = multiple processes, or persistent high usage\n"
+            f"5a. If MINOR: call remediate_high_memory with instance_id=\"{alarm.instance_id}\" and the offending PID\n"
+            f"5b. If MAJOR: you MUST call request_approval with "
+            f"instance_id=\"{alarm.instance_id}\", action_type=\"restart\", "
+            f"reason=\"<include diagnosis summary and metric values>\"\n"
+            f"6. Call send_alert_with_failover with "
+            f"subject=\"HIGH MEMORY: {alarm.instance_id}\" and a detailed message "
+            f"that MUST include: (a) ISSUE: what metric breached and the value, "
+            f"(b) DIAGNOSIS: top memory-consuming processes with PIDs and %mem, "
+            f"(c) ACTION TAKEN or PROPOSED: the exact remediation step — tool used, "
+            f"PID killed, or approval requested, (d) RESULT: current memory % after fix\n"
         )
 
     if alarm_type == "disk":
         return header + (
-            f"1. Call get_disk_usage with instance_id=\"{alarm.instance_id}\" "
-            f"and minutes=30\n"
-            f"2. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
-            f"3. Call send_alert_with_failover with "
-            f"subject=\"DISK FULL: {alarm.instance_id}\" and a message "
-            f"containing: the disk usage from step 1, instance details "
-            f"from step 2, AND a \"Recommended Actions\" section with "
-            f"concrete numbered remediation steps the engineer should take "
-            f"to free up disk space\n"
+            f"1. Call diagnose_instance with instance_id=\"{alarm.instance_id}\"\n"
+            f"2. Call get_disk_usage with instance_id=\"{alarm.instance_id}\" and minutes=30\n"
+            f"3. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
+            f"4. Classify as MINOR or MAJOR:\n"
+            f"   - MINOR = disk usage < 95%%\n"
+            f"   - MAJOR = disk usage >= 95%%\n"
+            f"5a. If MINOR: call remediate_disk_full with instance_id=\"{alarm.instance_id}\"\n"
+            f"5b. If MAJOR: you MUST call request_approval with "
+            f"instance_id=\"{alarm.instance_id}\", action_type=\"disk_cleanup\", "
+            f"reason=\"<include diagnosis summary and disk metrics>\"\n"
+            f"6. Call send_alert_with_failover with "
+            f"subject=\"DISK ALERT: {alarm.instance_id}\" and a detailed message "
+            f"that MUST include: (a) ISSUE: disk usage % and threshold, "
+            f"(b) DIAGNOSIS: largest directories/files consuming space, "
+            f"(c) ACTION TAKEN or PROPOSED: exact cleanup steps — what was deleted "
+            f"and how much space was freed, or approval requested, "
+            f"(d) RESULT: current disk usage % after cleanup\n"
         )
 
     # Default: CPU
     return header + (
-        f"1. Call get_cpu_metrics with instance_id=\"{alarm.instance_id}\" "
-        f"and period_minutes=30\n"
-        f"2. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
-        f"3. Call send_alert_with_failover with "
-        f"subject=\"HIGH CPU: {alarm.instance_id}\" and a message "
-        f"containing: the CPU metrics from step 1, instance details "
-        f"from step 2, AND a \"Recommended Actions\" section with "
-        f"concrete numbered remediation steps the engineer should take "
-        f"to fix the high CPU issue\n"
+        f"1. Call diagnose_instance with instance_id=\"{alarm.instance_id}\"\n"
+        f"2. Call get_cpu_metrics with instance_id=\"{alarm.instance_id}\" and period_minutes=30\n"
+        f"3. Call describe_ec2_instance with instance_id=\"{alarm.instance_id}\"\n"
+        f"4. Classify as MINOR or MAJOR:\n"
+        f"   - MINOR = one single process consuming > 80%% CPU\n"
+        f"   - MAJOR = multiple processes, sustained high CPU, or no clear single offender\n"
+        f"5a. If MINOR: call remediate_high_cpu with instance_id=\"{alarm.instance_id}\" and the offending PID\n"
+        f"5b. If MAJOR: you MUST call request_approval with "
+        f"instance_id=\"{alarm.instance_id}\", action_type=\"restart\", "
+        f"reason=\"<include diagnosis summary and CPU metrics>\"\n"
+        f"6. Call send_alert_with_failover with "
+        f"subject=\"CPU ALERT: {alarm.instance_id}\" and a detailed message "
+        f"that MUST include: (a) ISSUE: CPU % and threshold, "
+        f"(b) DIAGNOSIS: top CPU-consuming processes with PIDs, names, and %CPU, "
+        f"(c) ACTION TAKEN or PROPOSED: exact remediation — PID killed and process name, "
+        f"or approval requested with ID, (d) RESULT: current CPU % after fix\n"
     )
