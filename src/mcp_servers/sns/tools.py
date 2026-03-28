@@ -148,6 +148,7 @@ async def request_approval(
         "reason": reason,
         "details": details,
         "status": "pending",
+        "reminder_sent": False,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "ttl": ttl,
     })
@@ -171,10 +172,61 @@ async def request_approval(
 
     await send_alert_with_failover(subject=subject, message=message)
 
+    # ── Schedule a one-time reminder 20 minutes from now ─────────────
+    _schedule_reminder(approval_id, approve_url, reject_url)
+
     logger.info("Approval request %s created for %s on %s", approval_id, action_type, instance_id)
     return {
         "tool": "request_approval",
         "approval_id": approval_id,
         "status": f"Approval request sent. Waiting for human decision. Approve: {approve_url}",
     }
+
+
+def _schedule_reminder(approval_id: str, approve_url: str, reject_url: str) -> None:
+    """Create a one-time EventBridge schedule that fires 20 min from now.
+
+    The schedule invokes the Approval Handler Lambda with a reminder
+    payload.  The handler checks if the approval is still pending and
+    resends the email.  The schedule auto-deletes after firing.
+    """
+    scheduler_role_arn    = os.environ.get("SCHEDULER_ROLE_ARN", "").strip()
+    approval_handler_arn  = os.environ.get("APPROVAL_HANDLER_ARN", "").strip()
+
+    if not scheduler_role_arn or not approval_handler_arn:
+        logger.warning("SCHEDULER_ROLE_ARN or APPROVAL_HANDLER_ARN not set — skipping reminder schedule")
+        return
+
+    import json as _json
+    from datetime import datetime, timezone, timedelta
+
+    fire_at = datetime.now(timezone.utc) + timedelta(minutes=20)
+    schedule_expression = f"at({fire_at.strftime('%Y-%m-%dT%H:%M:%S')})"
+    # Schedule names must be unique; use first 8 chars of UUID
+    schedule_name = f"devops-approval-reminder-{approval_id[:8]}"
+
+    payload = _json.dumps({
+        "source": "devops-agent-reminder",
+        "approval_id": approval_id,
+        "approve_url": approve_url,
+        "reject_url": reject_url,
+    })
+
+    try:
+        scheduler_client = boto3.client("scheduler", region_name="ap-southeast-2")
+        scheduler_client.create_schedule(
+            Name=schedule_name,
+            ScheduleExpression=schedule_expression,
+            ScheduleExpressionTimezone="UTC",
+            FlexibleTimeWindow={"Mode": "OFF"},
+            Target={
+                "Arn": approval_handler_arn,
+                "RoleArn": scheduler_role_arn,
+                "Input": payload,
+            },
+            ActionAfterCompletion="DELETE",  # Auto-clean after firing
+        )
+        logger.info("Reminder schedule '%s' created for %s at %s", schedule_name, approval_id, fire_at.isoformat())
+    except Exception as exc:
+        logger.error("Failed to create reminder schedule: %s", exc)
  

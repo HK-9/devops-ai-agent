@@ -219,7 +219,7 @@ class AgentRunnerStack(cdk.Stack):
             environment={
                 "APPROVALS_TABLE": self.approvals_table.table_name,
                 "SNS_TOPIC_ARN": self.alert_topic.topic_arn,
-                "CODE_VERSION": "4",  # Bump this to force Lambda code update
+                "CODE_VERSION": "5",  # Bump this to force Lambda code update
             },
             code=_lambda.InlineCode(_APPROVAL_HANDLER_CODE),
         )
@@ -243,6 +243,55 @@ class AgentRunnerStack(cdk.Stack):
                 resources=["*"],
             )
         )
+
+        # Approval handler also needs to delete its own reminder schedule
+        self.approval_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["scheduler:DeleteSchedule"],
+                resources=["arn:aws:scheduler:*:*:schedule/default/devops-approval-reminder-*"],
+            )
+        )
+
+        # ── IAM Role for EventBridge Scheduler → Approval Handler ────
+        # Scheduler needs a role to assume when invoking the Lambda.
+        self.scheduler_role = iam.Role(
+            self,
+            "SchedulerInvokeRole",
+            role_name="devops-agent-scheduler-invoke-role",
+            assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com"),
+            inline_policies={
+                "InvokeApprovalHandler": iam.PolicyDocument(
+                    statements=[
+                        iam.PolicyStatement(
+                            effect=iam.Effect.ALLOW,
+                            actions=["lambda:InvokeFunction"],
+                            resources=[self.approval_fn.function_arn],
+                        )
+                    ]
+                )
+            },
+        )
+
+        # Agent Lambda needs to create one-time schedules for reminders
+        self.agent_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["scheduler:CreateSchedule", "scheduler:DeleteSchedule"],
+                resources=["arn:aws:scheduler:*:*:schedule/default/devops-approval-reminder-*"],
+            )
+        )
+        self.agent_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=["iam:PassRole"],
+                resources=[self.scheduler_role.role_arn],
+            )
+        )
+
+        # Pass scheduler config to agent Lambda so request_approval can create schedules
+        self.agent_fn.add_environment("SCHEDULER_ROLE_ARN", self.scheduler_role.role_arn)
+        self.agent_fn.add_environment("APPROVAL_HANDLER_ARN", self.approval_fn.function_arn)
 
         # ── API Gateway (HTTP) — approval callbacks ──────────────────
         self.api = apigwv2.HttpApi(
@@ -290,23 +339,30 @@ class AgentRunnerStack(cdk.Stack):
 # ── Approval Handler inline Lambda code ──────────────────────────────────
 
 _APPROVAL_HANDLER_CODE = """\
-# Approval Handler Lambda - v2
+# Approval Handler Lambda - v3 (with reminder support)
 import boto3
 import json
 import os
 import time
 
-ddb    = boto3.resource("dynamodb")
-table  = ddb.Table(os.environ["APPROVALS_TABLE"])
-sns    = boto3.client("sns")
-ec2    = boto3.client("ec2")
-ssm    = boto3.client("ssm")
+ddb       = boto3.resource("dynamodb")
+table     = ddb.Table(os.environ["APPROVALS_TABLE"])
+sns       = boto3.client("sns")
+ec2       = boto3.client("ec2")
+ssm       = boto3.client("ssm")
+scheduler = boto3.client("scheduler")
 
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 
 
 def handler(event, context):
     print(json.dumps(event))
+
+    # ---- Reminder path (invoked by EventBridge Scheduler) ----
+    if event.get("source") == "devops-agent-reminder":
+        return handle_reminder(event)
+
+    # ---- Normal approve/reject path (invoked by API Gateway) ----
     path = event.get("rawPath", "")
     path_params = event.get("pathParameters", {}) or {}
     approval_id = path_params.get("approval_id", "")
@@ -347,6 +403,9 @@ def handler(event, context):
     instance_id = item.get("instance_id", "")
     action_type = item.get("action_type", "")
     details     = item.get("details", "")
+
+    # Clean up the reminder schedule since the approval has been actioned
+    cleanup_reminder_schedule(approval_id)
 
     if decision == "approved":
         result = execute_action(instance_id, action_type, details)
@@ -442,6 +501,69 @@ def _html(code, title, body):
         "headers": {"Content-Type": "text/html"},
         "body": html,
     }
+
+
+def handle_reminder(event):
+    approval_id = event.get("approval_id", "")
+    if not approval_id:
+        print("Reminder event missing approval_id")
+        return {"statusCode": 400, "body": "Missing approval_id"}
+
+    # Check if still pending
+    resp = table.get_item(Key={"approval_id": approval_id})
+    item = resp.get("Item")
+    if not item or item.get("status") != "pending":
+        print("Approval " + approval_id + " is no longer pending, skipping reminder")
+        cleanup_reminder_schedule(approval_id)
+        return {"statusCode": 200, "body": "No reminder needed"}
+
+    instance_id = item.get("instance_id", "")
+    action_type = item.get("action_type", "")
+    reason      = item.get("reason", "")
+    created_at  = item.get("created_at", "")
+    approve_url = event.get("approve_url", "")
+    reject_url  = event.get("reject_url", "")
+
+    subject = "REMINDER: " + action_type.upper() + " on " + instance_id + " still awaiting approval"
+    message = (
+        "This is a reminder that the following action is still waiting for your approval:\n\n"
+        "  Instance:  " + instance_id + "\n"
+        "  Action:    " + action_type + "\n"
+        "  Reason:    " + reason + "\n"
+        "  Requested: " + created_at + "\n\n"
+        "This request has been pending for over 20 minutes.\n\n"
+        "Click to APPROVE:\n" + approve_url + "\n\n"
+        "Click to REJECT:\n" + reject_url + "\n\n"
+        "This link expires 24 hours after the original request.\n\n"
+        "\u2014 DevOps AI Agent"
+    )
+
+    notify(subject, message)
+    print("Reminder sent for approval " + approval_id)
+
+    # Mark reminder as sent in DynamoDB
+    table.update_item(
+        Key={"approval_id": approval_id},
+        UpdateExpression="SET reminder_sent = :true, reminder_sent_at = :t",
+        ExpressionAttributeValues={
+            ":true": True,
+            ":t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        },
+    )
+
+    # Clean up the one-time schedule
+    cleanup_reminder_schedule(approval_id)
+    return {"statusCode": 200, "body": "Reminder sent"}
+
+
+def cleanup_reminder_schedule(approval_id):
+    schedule_name = "devops-approval-reminder-" + approval_id[:8]
+    try:
+        scheduler.delete_schedule(Name=schedule_name)
+        print("Deleted reminder schedule: " + schedule_name)
+    except Exception as e:
+        # Schedule may not exist or already deleted
+        print("Could not delete schedule " + schedule_name + ": " + str(e))
 
 
 def _response(code, msg):
