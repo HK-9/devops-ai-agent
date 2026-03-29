@@ -1,10 +1,14 @@
-"""Flask application for the DevOps AI Agent Web UI."""
+"""Flask application for the DevOps AI Agent Web UI.
+
+Uses the Strands Agent (via web.agent) connected to the AgentCore MCP
+Gateway — no dependency on the legacy ``src/`` package.
+"""
 
 import logging
 import os
 from pathlib import Path
 
-# Force-load .env BEFORE any settings import so .env values
+# Force-load .env BEFORE any other imports
 _env_file = Path(__file__).resolve().parent.parent / ".env"
 if _env_file.exists():
     for line in _env_file.read_text().splitlines():
@@ -17,8 +21,6 @@ os.environ.pop("AGENT_ID", None)
 os.environ.pop("AGENT_ALIAS_ID", None)
 
 from flask import Flask  # noqa: E402
-
-from src.agent.config import settings  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,7 +46,8 @@ def create_app() -> Flask:
 if __name__ == "__main__":
     app = create_app()
     app.run(
-        host=settings.web_host,
-        port=settings.web_port,
-        debug=settings.web_debug,
+        host=os.environ.get("WEB_HOST", "0.0.0.0"),
+        port=int(os.environ.get("WEB_PORT", "5001")),
+        debug=os.environ.get("WEB_DEBUG", "true").lower() == "true",
     )
+ 

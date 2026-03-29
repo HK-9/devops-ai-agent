@@ -33,7 +33,7 @@ GATEWAY_URL = os.environ.get(
     "GATEWAY_URL",
     "https://devopsagentgatewayv3-ar4lmz2x6t.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
 )
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
+MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-pro-v1:0")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "15"))
 
@@ -235,13 +235,16 @@ class NovaBedrockModel(BedrockModel):
         super()._stream(normalizing_callback, messages, tool_specs, system_prompt_content, tool_choice)
 
 
-def create_agent(mcp_client: MCPClient, http_mode: bool = False) -> Agent:
+def create_agent(mcp_client: MCPClient, http_mode: bool = False, streaming: bool = True) -> Agent:
     """Build the Strands Agent with Bedrock model and MCP tools."""
-    model = NovaBedrockModel(
+    # Use NovaBedrockModel for Nova models (chunk normalization),
+    # standard BedrockModel for Claude/others.
+    model_cls = NovaBedrockModel if "nova" in MODEL_ID.lower() else BedrockModel
+    model = model_cls(
         region_name=AWS_REGION,
         model_id=MODEL_ID,
         max_tokens=4096,
-        streaming=True,
+        streaming=streaming,
     )
 
     agent = Agent(
@@ -405,3 +408,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+ 
