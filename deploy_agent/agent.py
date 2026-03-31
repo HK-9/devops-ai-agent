@@ -83,6 +83,11 @@ changes via clickable email links.
   links.  The engineer clicks the link to approve — no AWS Console needed.
   Supported action_types: "restart", "disk_cleanup", "kill_process",
   "cache_clear".
+- `check_approval_status_tool` — Check whether a pending approval has been
+  approved/rejected.  **Always call this first** when you are invoked with
+  an "APPROVED ACTION" prompt to verify the approval is genuine.
+- `update_approval_status_tool` — Mark an approval as "executed" or "failed"
+  after you have carried out the approved action.
 
 ### Teams (only when explicitly asked)
 - `send_teams_message_tool` — Plain text.
@@ -174,6 +179,24 @@ has full context when deciding.
 - Be **concise** and **actionable**.
 - Include raw metric values for validation.
 - Always state what you FOUND, what you DID (or proposed), and what REMAINS.
+
+## Executing Approved Actions
+When you receive a prompt starting with "APPROVED ACTION — EXECUTE IMMEDIATELY",
+an engineer has clicked the APPROVE link in an email.  Follow these steps exactly:
+
+1. **Verify** — Call `check_approval_status_tool` with the provided approval_id.
+   Confirm the status is "approved".  If not, do NOT proceed — notify the team.
+2. **Execute** — Based on the action_type:
+   - `restart` → Call `restart_ec2_instance_tool` with the instance_id.
+   - `disk_cleanup` → Call `remediate_disk_full_tool` with the instance_id.
+   - `kill_process` → Call `remediate_high_cpu_tool` with the instance_id and
+     the PID from the details field.
+   - `cache_clear` → Call `run_ssm_command_tool` with the instance_id and
+     command `sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'`.
+3. **Record** — Call `update_approval_status_tool` with the approval_id and
+   status="executed" (or "failed" if execution failed).
+4. **Notify** — Call `send_alert_with_failover_tool` with the execution result,
+   using subject prefix "EXECUTED:" to distinguish from initial alerts.
 
 ## Notification Format (for send_alert_with_failover_tool)
 Every notification MUST include these clearly labelled sections:

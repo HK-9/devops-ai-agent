@@ -2,6 +2,14 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "CloudFormationRead",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeStacks"
+      ],
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:650251690796:stack/DevOpsAgent-Runner/*"
+    },
+    {
       "Sid": "SNSPublish",
       "Effect": "Allow",
       "Action": [
