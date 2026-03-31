@@ -96,7 +96,7 @@ async def diagnose_instance_tool(instance_id: str) -> str:
 
 
 @mcp.tool()
-async def remediate_high_cpu_tool(instance_id: str, pid: str) -> str:
+async def remediate_high_cpu_tool(instance_id: str, pid: int) -> str:
     """Kill a runaway CPU process on an instance by PID.
     Use after diagnose_instance confirms the offending process.
     """
@@ -114,7 +114,7 @@ async def remediate_disk_full_tool(instance_id: str) -> str:
 
 
 @mcp.tool()
-async def remediate_high_memory_tool(instance_id: str, pid: str) -> str:
+async def remediate_high_memory_tool(instance_id: str, pid: int) -> str:
     """Kill a memory-hogging process on an instance by PID.
     Returns the kill result and current memory status.
     """

@@ -156,10 +156,15 @@ has full context when deciding.
 
 ### High CPU
 1. `diagnose_instance_tool` -> check `top_cpu` output for the offending PID.
-2. If a single process > 80% CPU: `remediate_high_cpu_tool` (MINOR auto-fix).
-3. If no clear offender or multiple processes: MAJOR ->
-   `request_approval_tool(action_type="restart", reason="...")`.
-4. Always call `send_alert_with_failover_tool` with the full diagnosis.
+2. **IMPORTANT — ignore infrastructure processes**: `ps aux` always shows SSM and
+   system processes spawned by the diagnostic tooling itself. ALWAYS ignore these
+   regardless of their CPU %: `ssm-agent-worker`, `ssm-document-worker`,
+   `amazon-ssm-agent`, `amazon-cloudwatch-agent`, `ps`, `grep`, `sh`, `bash`, `sleep`.
+   Only count **application/user processes** consuming >10% CPU as offenders.
+3. If a single application process > 80% CPU: `remediate_high_cpu_tool` (MINOR auto-fix).
+4. If multiple application processes are each consuming >10% CPU (and none is
+   infrastructure): MAJOR -> `request_approval_tool(action_type="restart", reason="...")`.
+5. Always call `send_alert_with_failover_tool` with the full diagnosis.
 
 ### High Memory
 1. `diagnose_instance_tool` -> check `top_memory` output.

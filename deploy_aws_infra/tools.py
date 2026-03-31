@@ -309,7 +309,7 @@ async def diagnose_instance(instance_id: str) -> dict[str, Any]:
     return {"instance_id": instance_id, "diagnostics": diagnostics}
 
 
-async def remediate_high_cpu(instance_id: str, pid: str) -> dict[str, Any]:
+async def remediate_high_cpu(instance_id: str, pid: int) -> str:
     """Kill a runaway process on an instance by PID.
 
     Args:
@@ -320,7 +320,7 @@ async def remediate_high_cpu(instance_id: str, pid: str) -> dict[str, Any]:
         Result of the kill command.
     """
     logger.info("Killing PID %s on %s", pid, instance_id)
-    return await run_ssm_command(instance_id, f"sudo kill -9 {pid}", timeout_seconds=15)
+    return await run_ssm_command(instance_id, f"sudo kill -9 {pid}", timeout_seconds=30)
 
 
 async def remediate_disk_full(instance_id: str) -> dict[str, Any]:
@@ -346,7 +346,7 @@ async def remediate_disk_full(instance_id: str) -> dict[str, Any]:
     return await run_ssm_command(instance_id, cleanup_script, timeout_seconds=60)
 
 
-async def remediate_high_memory(instance_id: str, pid: str) -> dict[str, Any]:
+async def remediate_high_memory(instance_id: str, pid: int) -> str:
     """Kill a memory-hogging process on an instance by PID.
 
     Args:
