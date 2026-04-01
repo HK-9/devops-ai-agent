@@ -1,12 +1,12 @@
-
 """
 AWS Lambda handler — EventBridge to DevOps Agent via AgentCore Runtime.
 """
+
 import json
 import os
-from urllib.parse import quote
-import urllib.request
 import urllib.error
+import urllib.request
+from urllib.parse import quote
 
 import boto3
 from botocore.auth import SigV4Auth
@@ -14,17 +14,18 @@ from botocore.awsrequest import AWSRequest
 
 REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 AGENT_RUNTIME_ARN = os.environ.get(
-    "AGENT_RUNTIME_ARN",
-    "arn:aws:bedrock-agentcore:ap-southeast-2:650251690796:runtime/devops_agent-AYHFY5ECcy"
+    "AGENT_RUNTIME_ARN", "arn:aws:bedrock-agentcore:ap-southeast-2:650251690796:runtime/devops_agent-AYHFY5ECcy"
 )
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 
+# Computed once at cold-start from AGENT_RUNTIME_ARN env var.
+# If the ARN changes (e.g. CDK redeploy), a new Lambda cold start will pick it up.
 _encoded_arn = quote(AGENT_RUNTIME_ARN, safe="")
 AGENTCORE_INVOKE_URL = f"https://bedrock-agentcore.{REGION}.amazonaws.com/runtimes/{_encoded_arn}/invocations"
 
-_session = boto3.Session(region_name=REGION)
-_credentials = _session.get_credentials()
 _sns = boto3.client("sns", region_name=REGION)
+
+_ALARM_LABELS = {"cpu": "CPU Alert", "memory": "Memory Alert", "disk": "Disk Alert", "unknown": "Alert"}
 
 
 def _parse_alarm(event):
@@ -47,9 +48,12 @@ def _parse_alarm(event):
 
 def _detect_alarm_type(alarm_name):
     name_lower = alarm_name.lower()
-    if "cpu" in name_lower: return "cpu"
-    elif "mem" in name_lower: return "memory"
-    elif "disk" in name_lower: return "disk"
+    if "cpu" in name_lower:
+        return "cpu"
+    elif "mem" in name_lower:
+        return "memory"
+    elif "disk" in name_lower:
+        return "disk"
     return "unknown"
 
 
@@ -63,14 +67,19 @@ def _send_sns(subject, message):
 
 
 def _invoke_agentcore(prompt):
+    # Fetch fresh credentials on every invocation to avoid expiry in warm Lambdas
+    credentials = boto3.Session(region_name=REGION).get_credentials().get_frozen_credentials()
+
     payload = json.dumps({"prompt": prompt}).encode("utf-8")
     request = AWSRequest(method="POST", url=AGENTCORE_INVOKE_URL, data=payload)
     request.headers["Content-Type"] = "application/json"
-    SigV4Auth(_credentials, "bedrock-agentcore", REGION).add_auth(request)
+    SigV4Auth(credentials, "bedrock-agentcore", REGION).add_auth(request)
 
     http_request = urllib.request.Request(
-        url=AGENTCORE_INVOKE_URL, data=payload,
-        headers=dict(request.headers), method="POST",
+        url=AGENTCORE_INVOKE_URL,
+        data=payload,
+        headers=dict(request.headers),
+        method="POST",
     )
     try:
         with urllib.request.urlopen(http_request, timeout=300) as resp:
@@ -93,13 +102,14 @@ def handler(event, context):
     print(f"Parsed: name={alarm['alarm_name']} instance={alarm['instance_id']} state={alarm['state']}")
 
     alarm_type = _detect_alarm_type(alarm["alarm_name"])
+    label = _ALARM_LABELS.get(alarm_type, "Alert")
     _send_sns(
-        subject=f"CPU Alert: {alarm['alarm_name']}",
-        message=f"Instance: {alarm['instance_id']}\nAlarm: {alarm['alarm_name']}\nReason: {alarm['reason']}\n\nDevOps Agent is investigating..."
+        subject=f"{label}: {alarm['alarm_name']}",
+        message=f"Instance: {alarm['instance_id']}\nAlarm: {alarm['alarm_name']}\nReason: {alarm['reason']}\n\nDevOps Agent is investigating...",
     )
 
-    prompt = f"""A CloudWatch alarm fired for instance {alarm['instance_id']}. 
-Alarm: {alarm['alarm_name']}. Reason: {alarm['reason']}. State: {alarm['state']}. Timestamp: {alarm['timestamp']}.
+    prompt = f"""A CloudWatch alarm fired for instance {alarm["instance_id"]}.
+Alarm: {alarm["alarm_name"]}. Reason: {alarm["reason"]}. State: {alarm["state"]}. Timestamp: {alarm["timestamp"]}.
 Investigate this alarm and take appropriate action following your runbook."""
 
     print(f"Invoking AgentCore: {AGENTCORE_INVOKE_URL[:80]}")
@@ -108,4 +118,7 @@ Investigate this alarm and take appropriate action following your runbook."""
     if result.get("error"):
         return {"statusCode": result.get("status", 500), "body": json.dumps({"error": result.get("message")})}
 
-    return {"statusCode": 200, "body": json.dumps({"alarm_name": alarm["alarm_name"], "agent_response": result.get("response", "")[:2000]})}
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"alarm_name": alarm["alarm_name"], "agent_response": result.get("response", "")[:2000]}),
+    }

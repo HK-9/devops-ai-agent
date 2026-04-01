@@ -26,31 +26,29 @@ import boto3
 
 # ── Configuration ────────────────────────────────────────────────────────
 
-REGION         = "ap-southeast-2"
-ACCOUNT        = "650251690796"
-FUNCTION_NAME  = "devops-agent-approval-handler"
-HANDLER        = "approval_handler.handler"
-RUNTIME        = "python3.12"
-TIMEOUT        = 180        # 3 minutes (agent invocation can take a while)
-MEMORY         = 256
-ROLE_NAME      = "devops-agent-approval-handler-role"
+REGION = "ap-southeast-2"
+ACCOUNT = "650251690796"
+FUNCTION_NAME = "devops-agent-approval-handler"
+HANDLER = "approval_handler.handler"
+RUNTIME = "python3.12"
+TIMEOUT = 180  # 3 minutes (agent invocation can take a while)
+MEMORY = 256
+ROLE_NAME = "devops-agent-approval-handler-role"
 
-AGENT_RUNTIME_ARN = (
-    f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:"
-    "runtime/devops_agent-AYHFY5ECcy"
-)
+AGENT_RUNTIME_ARN = f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:runtime/devops_agent-AYHFY5ECcy"
 
 # Source file for the Lambda
-HANDLER_FILE = Path(__file__).resolve().parent.parent / "deploy_sns" / "approval_handler.py"
+HANDLER_FILE = Path(__file__).resolve().parent.parent / "deployments" / "mcp_servers" / "sns" / "approval_handler.py"
 
 # ── Colours for terminal output ──────────────────────────────────────────
 
+
 class C:
-    GREEN  = "\033[92m"
-    RED    = "\033[91m"
+    GREEN = "\033[92m"
+    RED = "\033[91m"
     YELLOW = "\033[93m"
-    BOLD   = "\033[1m"
-    RESET  = "\033[0m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
 
 
 def log(msg, color=""):
@@ -58,6 +56,7 @@ def log(msg, color=""):
 
 
 # ── Lambda packaging ────────────────────────────────────────────────────
+
 
 def _build_zip() -> bytes:
     """Package approval_handler.py into an in-memory zip."""
@@ -71,11 +70,13 @@ def _build_zip() -> bytes:
 
 TRUST_POLICY = {
     "Version": "2012-10-17",
-    "Statement": [{
-        "Effect": "Allow",
-        "Principal": {"Service": "lambda.amazonaws.com"},
-        "Action": "sts:AssumeRole",
-    }],
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+            "Action": "sts:AssumeRole",
+        }
+    ],
 }
 
 PERMISSIONS_POLICY = {
@@ -161,6 +162,7 @@ def ensure_role() -> str:
         log(f"  Created role: {role_arn}", C.GREEN)
         # Wait for propagation
         import time
+
         time.sleep(10)
 
     # Update inline policy
@@ -175,6 +177,7 @@ def ensure_role() -> str:
 
 
 # ── Deploy ───────────────────────────────────────────────────────────────
+
 
 def deploy(dry_run: bool = False, setup: bool = False):
     """Deploy or update the approval handler Lambda."""
@@ -194,7 +197,7 @@ def deploy(dry_run: bool = False, setup: bool = False):
             log(f"  Lambda exists: {fn['Configuration']['FunctionArn']}")
             log(f"  Runtime: {fn['Configuration']['Runtime']}")
             log(f"  Last modified: {fn['Configuration']['LastModified']}")
-            env = fn['Configuration'].get('Environment', {}).get('Variables', {})
+            env = fn["Configuration"].get("Environment", {}).get("Variables", {})
             log(f"  AGENT_RUNTIME_ARN: {env.get('AGENT_RUNTIME_ARN', '(not set)')}")
         except lm.exceptions.ResourceNotFoundException:
             log(f"  Lambda does NOT exist — use --setup to create it", C.YELLOW)
@@ -273,7 +276,7 @@ def deploy(dry_run: bool = False, setup: bool = False):
     log(f"\n  ✓ Deployed: {fn['Configuration']['FunctionArn']}", C.GREEN)
     log(f"  ✓ Handler:  {fn['Configuration']['Handler']}")
     log(f"  ✓ Runtime:  {fn['Configuration']['Runtime']}")
-    env = fn['Configuration'].get('Environment', {}).get('Variables', {})
+    env = fn["Configuration"].get("Environment", {}).get("Variables", {})
     log(f"  ✓ Agent ARN: {env.get('AGENT_RUNTIME_ARN', 'NOT SET')}")
 
     log(f"\n  {'=' * 60}", C.BOLD)
@@ -284,6 +287,7 @@ def deploy(dry_run: bool = False, setup: bool = False):
 def _wait_for_update(lm, max_wait=30):
     """Wait for Lambda to finish updating."""
     import time
+
     for _ in range(max_wait):
         try:
             resp = lm.get_function(FunctionName=FUNCTION_NAME)
@@ -297,18 +301,16 @@ def _wait_for_update(lm, max_wait=30):
 
 # ── CLI ──────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Deploy the Approval Handler Lambda (AgentCore-native)",
     )
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Show what would change without deploying")
-    parser.add_argument("--setup", action="store_true",
-                        help="Create the Lambda if it doesn't exist")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would change without deploying")
+    parser.add_argument("--setup", action="store_true", help="Create the Lambda if it doesn't exist")
     args = parser.parse_args()
     deploy(dry_run=args.dry_run, setup=args.setup)
 
 
 if __name__ == "__main__":
     main()
- 

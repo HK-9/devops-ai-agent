@@ -51,15 +51,21 @@ def _build_lambda_bundle() -> str:
     # pip install dependencies (targeting Linux x86_64 for Lambda)
     subprocess.check_call(
         [
-            "pip", "install",
-            "-r", str(req_file),
-            "-t", str(bundle),
+            "pip",
+            "install",
+            "-r",
+            str(req_file),
+            "-t",
+            str(bundle),
             "--quiet",
             "--disable-pip-version-check",
-            "--platform", "manylinux2014_x86_64",
+            "--platform",
+            "manylinux2014_x86_64",
             "--only-binary=:all:",
-            "--implementation", "cp",
-            "--python-version", "3.12",
+            "--implementation",
+            "cp",
+            "--python-version",
+            "3.12",
         ],
     )
 
@@ -107,9 +113,7 @@ class AgentRunnerStack(cdk.Stack):
         )
 
         if alert_email:
-            self.alert_topic.add_subscription(
-                subs.EmailSubscription(alert_email)
-            )
+            self.alert_topic.add_subscription(subs.EmailSubscription(alert_email))
         # ── Lambda function ──────────────────────────────────────────
         self.agent_fn = _lambda.Function(
             self,
@@ -122,12 +126,9 @@ class AgentRunnerStack(cdk.Stack):
             memory_size=512,
             environment={
                 "LOG_LEVEL": "INFO",
-                "LOG_FORMAT": "json",
-                # Note: AWS_REGION is set automatically by Lambda runtime
-                # AGENT_ID and AGENT_ALIAS_ID left empty → uses invoke_inline_agent
-                "BEDROCK_MODEL_ID": "amazon.nova-lite-v1:0",
-                # "TEAMS_WEBHOOK_URL": "...", # Uncomment and add URL when ready
+                "AWS_REGION": "ap-southeast-2",
                 "SNS_TOPIC_ARN": self.alert_topic.topic_arn,
+                "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:ap-southeast-2:650251690796:runtime/devops_agent-AYHFY5ECcy",
             },
             log_group=log_group,
         )
@@ -172,11 +173,11 @@ class AgentRunnerStack(cdk.Stack):
             )
         )
 
-        # Bedrock AgentCore invoke
+        # Bedrock AgentCore — invoke the agent runtime
         self.agent_fn.add_to_role_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
-                actions=["bedrock:*"],
+                actions=["bedrock-agentcore:*"],
                 resources=["*"],
             )
         )
@@ -211,7 +212,8 @@ class AgentRunnerStack(cdk.Stack):
             timeout=cdk.Duration.minutes(3),
             memory_size=256,
             log_group=logs.LogGroup(
-                self, "ApprovalLogGroup",
+                self,
+                "ApprovalLogGroup",
                 log_group_name="/aws/lambda/devops-agent-approval-handler",
                 retention=logs.RetentionDays.TWO_WEEKS,
                 removal_policy=cdk.RemovalPolicy.DESTROY,
@@ -220,6 +222,7 @@ class AgentRunnerStack(cdk.Stack):
                 "APPROVALS_TABLE": self.approvals_table.table_name,
                 "SNS_TOPIC_ARN": self.alert_topic.topic_arn,
                 "CODE_VERSION": "5",  # Bump this to force Lambda code update
+                "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:ap-southeast-2:650251690796:runtime/devops_agent-AYHFY5ECcy",
             },
             code=_lambda.InlineCode(_APPROVAL_HANDLER_CODE),
         )
@@ -330,7 +333,8 @@ class AgentRunnerStack(cdk.Stack):
         cdk.CfnOutput(self, "SnsTopicArn", value=self.alert_topic.topic_arn)
         cdk.CfnOutput(self, "ApprovalsTableName", value=self.approvals_table.table_name)
         cdk.CfnOutput(
-            self, "ApprovalApiUrl",
+            self,
+            "ApprovalApiUrl",
             value=self.api.url or "",
             description="Base URL for approve/reject callbacks",
         )
