@@ -56,6 +56,10 @@ LOG_GROUP = "/aws/bedrock-agentcore/runtimes/devops_agent-AYHFY5ECcy-DEFAULT"
 # Original thresholds (CDK defaults)
 ORIG = {"cpu": 90, "memory": 85, "disk": 90}
 
+# Scenario-specific durations (seconds)
+DURATION_MINOR = 60   # Fast — agent completes in ~30s, stress can end quickly
+DURATION_MAJOR = 180  # Needs buffer — processes must remain visible when agent diagnoses
+
 # Alarm definitions keyed by type
 ALARM_DEFS = {
     "cpu":    {"ns": "AWS/EC2",  "metric": "CPUUtilization",  "extra_dims": []},
@@ -148,14 +152,15 @@ def _stress_cmd(alarm_type, scenario, duration):
 
     if alarm_type == "cpu":
         if scenario == "minor":
-            # SINGLE python3 busy-loop — one stable process at ~100% on one core.
+            # SINGLE 'yes' process — no timeout wrapper (creates 2 PIDs).
+            # A background sleep+kill cleans up but uses 0% CPU → agent ignores it.
             return f"""
-echo "[MINOR CPU] Starting single python3 busy-loop for {duration}s..."
-python3 -c "import time; end=time.time()+{duration};
-while time.time()<end: pass" &
+echo "[MINOR CPU] Starting single 'yes' process for {duration}s..."
+yes > /dev/null 2>&1 &
 PID=$!
 echo "Single process PID: $PID"
-wait $PID 2>/dev/null
+sleep {duration}
+kill $PID 2>/dev/null
 echo "CPU stress done"
 """
         else:
@@ -384,10 +389,11 @@ Examples:
     python scripts/test_automation.py -i i-0327d856931d3b38f --dry-run
 """)
     p.add_argument("--instance-id", "-i", required=True)
-    p.add_argument("--threshold", "-t", type=int, default=5, help="Test threshold %% (default: 5)")
+    p.add_argument("--threshold", "-t", type=int, default=10, help="Test threshold %% (default: 10)")
     p.add_argument("--alarm-type", choices=["cpu", "memory", "disk", "all"], default="cpu")
     p.add_argument("--scenario", choices=["minor", "major", "both"], default="major")
-    p.add_argument("--duration", "-d", type=int, default=400, help="Stress duration seconds (default: 400)")
+    p.add_argument("--duration", "-d", type=int, default=None,
+                    help="Stress duration seconds (auto: MINOR=60, MAJOR=180)")
     p.add_argument("--skip-stress", action="store_true", help="Skip stress, invoke agent manually")
     p.add_argument("--thresholds-only", action="store_true", help="Just lower thresholds and exit")
     p.add_argument("--restore", action="store_true", help="Restore original thresholds and exit")
@@ -399,12 +405,23 @@ Examples:
     scenario_label = {"minor": "MINOR (auto-fix)", "major": "MAJOR (approval)",
                       "both": "BOTH (minor → major)"}[args.scenario]
 
+    # Compute duration if not explicitly set
+    if args.duration is None:
+        if args.scenario == "minor":
+            duration_display = f"{DURATION_MINOR}s (auto)"
+        elif args.scenario == "major":
+            duration_display = f"{DURATION_MAJOR}s (auto)"
+        else:  # both
+            duration_display = f"MINOR={DURATION_MINOR}s, MAJOR={DURATION_MAJOR}s (auto)"
+    else:
+        duration_display = f"{args.duration}s"
+
     header("DevOps Agent — E2E Automation Test")
     log(f"  Instance:   {iid}", CY)
     log(f"  Alarm Type: {args.alarm_type}", CY)
     log(f"  Scenario:   {scenario_label}", CY)
     log(f"  Threshold:  {args.threshold}%", CY)
-    log(f"  Duration:   {args.duration}s", CY)
+    log(f"  Duration:   {duration_display}", CY)
 
     # ── Restore mode ──────────────────────────────────────────────────
     if args.restore:
@@ -435,24 +452,31 @@ Examples:
         if len(scenarios) > 1:
             header(f"SCENARIO {idx+1}/{len(scenarios)}: {scenario.upper()}")
 
+        # Scenario-specific duration
+        duration = args.duration if args.duration else (DURATION_MINOR if scenario == "minor" else DURATION_MAJOR)
+
         if not args.skip_stress:
-            run_stress(iid, args.alarm_type, scenario, args.duration, args.dry_run)
+            run_stress(iid, args.alarm_type, scenario, duration, args.dry_run)
 
             if not args.dry_run:
-                # Wait for CloudWatch to pick up metrics
-                cw_wait = 30
+                # Wait for CloudWatch to pick up metrics (period=60s, 1 eval)
+                cw_wait = 30 if scenario == "minor" else 45
                 log(f"\n  Waiting {cw_wait}s for CloudWatch to pick up metrics...", YL)
                 time.sleep(cw_wait)
 
-                # Check alarm(s) fired then invoke AgentCore runtime directly
+                # Check alarm(s) fired
                 types = ["cpu", "memory", "disk"] if args.alarm_type == "all" else [args.alarm_type]
                 for at in types:
-                    triggered = wait_alarm(_alarm_name(iid, at), timeout=420)
-                    if triggered:
-                        log(f"\n  ✓ Alarm fired — invoking AgentCore runtime...", GR)
-                        results[scenario] = invoke_agent(iid, at, args.dry_run)
-                    else:
-                        log(f"  {at.upper()} alarm didn't fire — agent not invoked", YL)
+                    triggered = wait_alarm(_alarm_name(iid, at), timeout=300)
+                    if not triggered:
+                        log(f"  {at.upper()} alarm didn't fire — agent may not be invoked", YL)
+
+                # Tail agent logs (EventBridge invokes agent automatically when alarm fires)
+                log_time = 30 if scenario == "minor" else 90
+                log(f"\n  ✓ EventBridge invokes agent automatically (production flow).", GR)
+                log(f"    Tailing logs for {log_time}s...", CY)
+                tail_logs(seconds=log_time)
+                results[scenario] = "EventBridge-triggered"
         else:
             # No real alarm → invoke agent manually with simulated event
             types = ["cpu", "memory", "disk"] if args.alarm_type == "all" else [args.alarm_type]
@@ -465,15 +489,13 @@ Examples:
 
         # Pause between scenarios when running both
         if len(scenarios) > 1 and scenario == "minor" and not args.dry_run:
-            log("\n  Pausing 30s before MAJOR scenario...", YL)
-            time.sleep(30)
+            log("\n  Pausing 15s before MAJOR scenario...", YL)
+            time.sleep(15)
 
     # ── Restore thresholds ────────────────────────────────────────────
     if not args.no_restore and not args.dry_run:
-        delay = 5
-        log(f"\n  Restoring thresholds in {delay}s (Ctrl+C to keep low)...", YL)
+        log("\n  Restoring thresholds...", YL)
         try:
-            time.sleep(delay)
             put_alarms(iid, ORIG, period=300, evals=2)
         except KeyboardInterrupt:
             log("\n  Keeping low thresholds.", YL)
@@ -500,4 +522,5 @@ Examples:
 
 
 if __name__ == "__main__":
-    main() 
+    main()
+ 

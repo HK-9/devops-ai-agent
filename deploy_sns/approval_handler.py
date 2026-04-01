@@ -19,14 +19,24 @@ import json
 import os
 import time
 import uuid
+from urllib import request as urllib_request
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 
 ddb       = boto3.resource("dynamodb")
 table     = ddb.Table(os.environ["APPROVALS_TABLE"])
 sns       = boto3.client("sns")
-ac        = boto3.client("bedrock-agentcore", region_name=os.environ.get("AWS_REGION", "ap-southeast-2"))
 
+AWS_REGION        = os.environ.get("AWS_REGION", "ap-southeast-2")
 SNS_TOPIC_ARN     = os.environ.get("SNS_TOPIC_ARN", "")
 AGENT_RUNTIME_ARN = os.environ.get("AGENT_RUNTIME_ARN", "")
+
+# AgentCore direct invocation URL (no boto3 bedrock-agentcore client needed)
+AGENTCORE_INVOKE_URL = (
+    f"https://bedrock-agentcore.{AWS_REGION}.amazonaws.com/runtimes/"
+    + urllib_request.quote(AGENT_RUNTIME_ARN, safe="")
+    + "/invocations"
+) if AGENT_RUNTIME_ARN else ""
 
 
 def handler(event, context):
@@ -116,12 +126,12 @@ def handler(event, context):
 # ── Agent Invocation ─────────────────────────────────────────────────────
 
 def invoke_agent_for_execution(approval_id, instance_id, action_type, reason, details):
-    """Invoke the AgentCore agent to execute an approved action.
+    """Invoke the AgentCore agent via direct HTTP URL to execute an approved action.
 
-    The agent receives a structured prompt with all approval details
-    and uses its MCP tools (restart, disk_cleanup, etc.) to execute.
+    Uses the AgentCore invocation URL with SigV4 auth — no boto3
+    bedrock-agentcore client needed (works in any Lambda runtime).
     """
-    if not AGENT_RUNTIME_ARN:
+    if not AGENTCORE_INVOKE_URL:
         print("AGENT_RUNTIME_ARN not set — cannot invoke agent")
         return False
 
@@ -150,24 +160,37 @@ def invoke_agent_for_execution(approval_id, instance_id, action_type, reason, de
 
     try:
         session_id = f"{uuid.uuid4()}-{uuid.uuid4()}"
-        resp = ac.invoke_agent_runtime(
-            agentRuntimeArn=AGENT_RUNTIME_ARN,
-            runtimeSessionId=session_id,
-            payload=json.dumps({"prompt": prompt}).encode(),
+        payload = json.dumps({
+            "prompt": prompt,
+            "runtimeSessionId": session_id,
+        }).encode()
+
+        # Sign the request with SigV4
+        session = boto3.Session()
+        credentials = session.get_credentials().get_frozen_credentials()
+        aws_request = AWSRequest(
+            method="POST",
+            url=AGENTCORE_INVOKE_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
         )
-        print(f"Agent invoked for approval {approval_id}, session={session_id}")
-        # Read response (don't need to process it — agent handles everything)
-        raw = resp.get("response") or resp.get("payload", b"")
-        if hasattr(raw, "read"):
-            body = raw.read().decode("utf-8", errors="replace")
-        elif isinstance(raw, bytes):
-            body = raw.decode("utf-8", errors="replace")
-        else:
-            body = str(raw)
+        SigV4Auth(credentials, "bedrock-agentcore", AWS_REGION).add_auth(aws_request)
+
+        # Send HTTP request
+        req = urllib_request.Request(
+            AGENTCORE_INVOKE_URL,
+            data=payload,
+            headers=dict(aws_request.headers),
+            method="POST",
+        )
+        with urllib_request.urlopen(req, timeout=120) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+
+        print(f"Agent invoked via AgentCore URL for approval {approval_id}, session={session_id}")
         print(f"Agent response (truncated): {body[:500]}")
         return True
     except Exception as exc:
-        print(f"Failed to invoke agent: {exc}")
+        print(f"Failed to invoke agent via URL: {exc}")
         return False
 
 
