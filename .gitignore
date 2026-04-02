@@ -13,3 +13,6 @@ response_model.json
 lambda_response.json
 model_test.json
 cms/
+
+# Windows reserved device names
+NUL

@@ -1,9 +1,13 @@
 """
 AWS Lambda handler — EventBridge to DevOps Agent via AgentCore Runtime.
+
+Includes DynamoDB-based deduplication to prevent the same alarm from
+triggering multiple agent invocations (and multiple emails).
 """
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from urllib.parse import quote
@@ -17,6 +21,10 @@ AGENT_RUNTIME_ARN = os.environ.get(
     "AGENT_RUNTIME_ARN", "arn:aws:bedrock-agentcore:ap-southeast-2:650251690796:runtime/devops_agent-AYHFY5ECcy"
 )
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
+APPROVALS_TABLE = os.environ.get("APPROVALS_TABLE", "devops-agent-approvals")
+
+# Deduplication window — skip if the same alarm was processed within this period
+DEDUP_WINDOW = int(os.environ.get("DEDUP_WINDOW_SECONDS", "600"))  # 10 minutes
 
 # Computed once at cold-start from AGENT_RUNTIME_ARN env var.
 # If the ARN changes (e.g. CDK redeploy), a new Lambda cold start will pick it up.
@@ -24,8 +32,11 @@ _encoded_arn = quote(AGENT_RUNTIME_ARN, safe="")
 AGENTCORE_INVOKE_URL = f"https://bedrock-agentcore.{REGION}.amazonaws.com/runtimes/{_encoded_arn}/invocations"
 
 _sns = boto3.client("sns", region_name=REGION)
+_ddb = boto3.resource("dynamodb", region_name=REGION)
+_dedup_table = _ddb.Table(APPROVALS_TABLE)
 
-_ALARM_LABELS = {"cpu": "CPU Alert", "memory": "Memory Alert", "disk": "Disk Alert", "unknown": "Alert"}
+
+# ── Alarm parsing ────────────────────────────────────────────────────────
 
 
 def _parse_alarm(event):
@@ -57,13 +68,51 @@ def _detect_alarm_type(alarm_name):
     return "unknown"
 
 
-def _send_sns(subject, message):
-    if SNS_TOPIC_ARN:
-        try:
-            _sns.publish(TopicArn=SNS_TOPIC_ARN, Subject=subject[:100], Message=message)
-            print(f"SNS alert sent: {subject}")
-        except Exception as e:
-            print(f"SNS failed: {e}")
+# ── Deduplication ────────────────────────────────────────────────────────
+
+
+def _is_duplicate_alarm(alarm_name):
+    """Check if this alarm was already processed within DEDUP_WINDOW seconds.
+
+    Uses the existing approvals DynamoDB table with a key prefix of
+    ``alarm_dedup:`` to avoid collisions with real approval records.
+    """
+    dedup_key = f"alarm_dedup:{alarm_name}"
+    try:
+        resp = _dedup_table.get_item(Key={"approval_id": dedup_key})
+        item = resp.get("Item")
+        if item:
+            processed_at = int(item.get("processed_at", 0))
+            age = int(time.time()) - processed_at
+            if age < DEDUP_WINDOW:
+                print(f"DEDUP: {alarm_name} was processed {age}s ago (window={DEDUP_WINDOW}s), skipping")
+                return True
+    except Exception as e:
+        # If dedup check fails, proceed — better to process than miss an alarm
+        print(f"DEDUP check failed (proceeding anyway): {e}")
+    return False
+
+
+def _mark_alarm_processed(alarm_name):
+    """Record that this alarm has been processed.
+
+    The TTL attribute auto-deletes the record after 1 hour so the table
+    doesn't accumulate stale dedup entries.
+    """
+    dedup_key = f"alarm_dedup:{alarm_name}"
+    try:
+        _dedup_table.put_item(
+            Item={
+                "approval_id": dedup_key,
+                "processed_at": int(time.time()),
+                "ttl": int(time.time()) + 3600,  # Auto-delete after 1 hour
+            }
+        )
+    except Exception as e:
+        print(f"DEDUP mark failed: {e}")
+
+
+# ── Agent invocation ─────────────────────────────────────────────────────
 
 
 def _invoke_agentcore(prompt):
@@ -95,30 +144,57 @@ def _invoke_agentcore(prompt):
         return {"status": 500, "response": "", "error": True, "message": str(e)}
 
 
+# ── Handler ──────────────────────────────────────────────────────────────
+
+
 def handler(event, context):
     print(f"Lambda invoked: {json.dumps(event, default=str)[:500]}")
 
     alarm = _parse_alarm(event)
     print(f"Parsed: name={alarm['alarm_name']} instance={alarm['instance_id']} state={alarm['state']}")
 
+    # Only process ALARM state — ignore OK / INSUFFICIENT_DATA transitions
+    if alarm["state"] != "ALARM":
+        print(f"Ignoring non-ALARM state: {alarm['state']}")
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"status": "ignored", "state": alarm["state"]}),
+        }
+
+    # Deduplication — skip if this alarm was already processed recently
+    if _is_duplicate_alarm(alarm["alarm_name"]):
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"status": "deduplicated", "alarm": alarm["alarm_name"]}),
+        }
+
+    # Mark as processing BEFORE invoking agent to prevent parallel races
+    _mark_alarm_processed(alarm["alarm_name"])
+
     alarm_type = _detect_alarm_type(alarm["alarm_name"])
 
-    # NOTE: Do NOT send an "investigating" SNS email here.
-    # The agent will send exactly ONE notification after it finishes
-    # (either "AUTO-FIXED" for MINOR or approval email for MAJOR).
-    # Sending here caused duplicate emails.
-
-    prompt = f"""A CloudWatch alarm fired for instance {alarm["instance_id"]}.
-Alarm: {alarm["alarm_name"]}. Reason: {alarm["reason"]}. State: {alarm["state"]}. Timestamp: {alarm["timestamp"]}.
-Investigate this alarm and take appropriate action following your runbook."""
+    prompt = (
+        f"A CloudWatch alarm fired for instance {alarm['instance_id']}.\n"
+        f"Alarm: {alarm['alarm_name']}. Reason: {alarm['reason']}. "
+        f"State: {alarm['state']}. Timestamp: {alarm['timestamp']}.\n"
+        f"Investigate this alarm and take appropriate action following your runbook."
+    )
 
     print(f"Invoking AgentCore: {AGENTCORE_INVOKE_URL[:80]}")
     result = _invoke_agentcore(prompt)
 
     if result.get("error"):
-        return {"statusCode": result.get("status", 500), "body": json.dumps({"error": result.get("message")})}
+        return {
+            "statusCode": result.get("status", 500),
+            "body": json.dumps({"error": result.get("message")}),
+        }
 
     return {
         "statusCode": 200,
-        "body": json.dumps({"alarm_name": alarm["alarm_name"], "agent_response": result.get("response", "")[:2000]}),
+        "body": json.dumps(
+            {
+                "alarm_name": alarm["alarm_name"],
+                "agent_response": result.get("response", "")[:2000],
+            }
+        ),
     }

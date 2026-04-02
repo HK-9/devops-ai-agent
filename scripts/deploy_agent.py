@@ -105,6 +105,7 @@ def _step_deploy(tag: str) -> str:
             tag,
             AGENT_ROLE,
             protocol=None,  # Agent is HTTP, not MCP
+            env_overrides=RUNTIME_ENV,
         )
         return existing_id
     else:

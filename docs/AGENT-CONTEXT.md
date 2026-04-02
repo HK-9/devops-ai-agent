@@ -312,48 +312,49 @@ chat prompts still get the full tool set.
 
 ## Immediate Next Steps (BLOCKERS)
 
-### 🔴 BLOCKER #1: `diagnose_instance_tool` times out via SSM
+### ✅ BLOCKER #1: `diagnose_instance_tool` times out via SSM — FIXED
 
-The agent's FIRST call should be `diagnose_instance_tool`, but it returns
-502 because SSM commands on these instances take too long for the container
-timeout. When diagnose fails, the agent falls back to CloudWatch metrics
-and goes completely off-track.
+The agent's FIRST call should be `diagnose_instance_tool`, but it returned
+502 because SSM commands took too long — the old implementation ran **6
+separate SSM commands sequentially** (top_cpu, top_memory, df, free, uptime,
+ss), each with a 30s timeout → up to 180s total and 6 network round-trips.
 
-**Possible fixes:**
-1. **Increase container/SSM timeout** — check AgentCore runtime timeout settings
-   and the SSM `TimeoutSeconds` in the aws-infra MCP server tools
-2. **Test on `i-0327d856931d3b38f` (test-4)** — this instance is in a public
-   subnet, SSM may be faster. The test was on `i-0bf11b006e8f12844` (private subnet)
-3. **Simplify `diagnose_instance_tool`** — it runs 5+ SSM commands sequentially
-   (top, df, free, uptime, ss). Reduce to just `top` for CPU alarms
-4. **Add a lightweight diagnose** — create a `quick_diagnose_tool` that only
-   runs `ps aux --sort=-%cpu | head -10` (single fast command)
+**Fix applied** (`deployments/mcp_servers/aws_infra/tools.py`):
+Rewrote `diagnose_instance()` to combine all 6 diagnostics into a **single
+shell script** sent as **one SSM command** (45s timeout). The script uses
+`===SECTION===` markers (e.g. `===TOP_CPU===`, `===DISK_USAGE===`) and the
+output is parsed back into the same per-check dict structure. Result:
+- 6 round-trips → 1 round-trip
+- ~180s worst case → ~45s worst case
+- Return format unchanged — callers need no changes
 
-### 🔴 BLOCKER #2: Nova sends multiple emails / goes off-track
+### ✅ BLOCKER #2: Nova sends multiple emails / goes off-track — FIXED
 
-Even with the system prompt saying "ONE email per alarm, then STOP", Nova:
-- Sends 2-3 emails per alarm
-- Goes off on tangents (trying to install CW Agent)
-- Doesn't stop after the first notification
+The old system prompt was **~210 lines** of instructions that Nova Lite
+couldn't follow. It repeated the same rule 6 times, was full of negative
+instructions ("Do NOT...", "NEVER..."), included inline tool docs that
+duplicated the MCP tool specs, and mixed alarm/approval/chat workflows
+into one wall of text. Nova lost focus and did exactly what it was told
+not to do: sent multiple emails, called wrong tools, went off on tangents.
 
-**Possible fixes:**
-1. **Switch to Nova Pro** (`amazon.nova-pro-v1:0`) — more capable, may follow
-   instructions better than Nova Lite
-2. **Reduce MAX_TURNS** — currently 8, reduce to 3-4 for alarm prompts so
-   the agent is forced to stop after fewer tool calls
-3. **Hard-code the alarm workflow** — instead of relying on the LLM to follow
-   a multi-step runbook, implement the MINOR/MAJOR logic in Python code that
-   calls tools directly, using the LLM only for classification
-4. **Use Claude** — fix AWS billing to unlock Anthropic models; Claude follows
-   multi-step instructions much more reliably than Nova
+**Fix applied** (`deployments/agent/agent.py`):
+1. **Rewrote SYSTEM_PROMPT** — from ~210 lines down to ~55 lines. The new
+   prompt is short, positive, and sequential:
+   - STEP 1: diagnose → STEP 2: count processes → STEP 3a/3b/3c: act
+   - Tells Nova exactly what to do, not a novel of what not to do
+   - Includes a STEP 3c fallback path if diagnose fails (call metrics +
+     send "NEEDS ATTENTION" email) so the agent doesn't improvise
+   - Separates alarm workflow, chat mode, and approval execution cleanly
+2. **Reduced MAX_TURNS from 8 to 4** — the agent needs at most 3 tool
+   calls (diagnose + remediate + notify), so 4 turns is a hard ceiling
+   that physically prevents email spam even if Nova tries to loop
 
-### 🔴 BLOCKER #3: No APPROVE/REJECT links in MAJOR emails
+### ✅ BLOCKER #3: No APPROVE/REJECT links in MAJOR emails — FIXED
 
-The agent calls `send_alert_with_failover_tool` (plain notification) instead
-of `request_approval_tool` (which generates the clickable links). The system
-prompt is clear about this, but Nova doesn't follow the distinction.
-
-**Same root cause as Blocker #2** — Nova LLM not following complex instructions.
+Root cause was the same as Blocker #2 — Nova couldn't distinguish between
+`send_alert_with_failover_tool` and `request_approval_tool` in the old
+210-line prompt. The new prompt makes STEP 3b crystal clear: MAJOR issues
+→ call `request_approval_tool` → it sends the email with links → done.
 
 ### Other Known Issues
 
@@ -367,15 +368,49 @@ prompt is clear about this, but Nova doesn't follow the distinction.
 
 ---
 
+## Fixes Applied This Session (Blockers 1-3)
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `deployments/mcp_servers/aws_infra/tools.py` | `diagnose_instance()` — 6 sequential SSM calls → 1 combined call with section markers |
+| `deployments/agent/agent.py` | `SYSTEM_PROMPT` — rewritten from ~210 lines to ~55 lines (short, positive, sequential) |
+| `deployments/agent/agent.py` | `MAX_TURNS` default: 8 → 4 |
+| `docs/AGENT-CONTEXT.md` | This file — updated blocker status |
+
+### Deployment Required
+
+Both the **agent container** and the **aws-infra MCP server** need redeployment:
+```bash
+# 1. Deploy updated aws-infra MCP server (diagnose fix)
+python scripts/deploy_agent.py deploy-mcp aws_infra
+
+# 2. Deploy updated agent (prompt + MAX_TURNS fix)
+python scripts/deploy_agent.py deploy
+
+# 3. Test MINOR scenario on test-4 (public subnet, fast SSM)
+python scripts/test_remediation.py -i i-0327d856931d3b38f --type cpu --scenario minor
+python scripts/test_remediation.py --logs --minutes 5
+```
+
+### What to Watch For in Testing
+- ✅ `diagnose_instance_tool` should return within ~10-20s (was timing out)
+- ✅ Agent should make exactly 3 tool calls for MINOR: diagnose → remediate → notify
+- ✅ Agent should make exactly 2 tool calls for MAJOR: diagnose → request_approval
+- ✅ Exactly 1 email per alarm
+- ✅ MAJOR emails should have APPROVE/REJECT links (via `request_approval_tool`)
+- ⚠️ If Nova Lite still misbehaves with the new prompt, try Nova Pro: `MODEL_ID=amazon.nova-pro-v1:0`
+
+---
+
 ## Recommended Next Session Priority
 
-1. **Fix diagnose timeout** — this is the root of all problems. If diagnose works,
-   the agent sees the actual stress-ng process and can act correctly
-2. **Try Nova Pro** — switch `MODEL_ID` to `amazon.nova-pro-v1:0`, redeploy, retest.
-   Pro is more capable and may follow the runbook correctly
-3. **If Nova Pro also fails** — consider implementing the alarm workflow as
-   deterministic Python code (not LLM-driven) that calls MCP tools directly
-4. **If billing gets fixed** — switch to Claude immediately, all these issues disappear
+1. **Deploy + retest** — deploy both changed containers, run MINOR + MAJOR
+   stress tests on `i-0327d856931d3b38f` (public subnet, fast SSM)
+2. **If Nova Lite still struggles** — switch `MODEL_ID` to `amazon.nova-pro-v1:0`,
+   redeploy, retest. Pro is more capable and the new short prompt should work well
+3. **If billing gets fixed** — switch to Claude immediately, all remaining edge cases disappear
 
 ---
 

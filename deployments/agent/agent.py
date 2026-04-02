@@ -40,9 +40,9 @@ GATEWAY_URL = os.environ.get(
     "GATEWAY_URL",
     "https://devopsagentgatewayv3-ar4lmz2x6t.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
 )
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
+MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-pro-v1:0")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
-MAX_TURNS = int(os.environ.get("MAX_TURNS", "8"))
+MAX_TURNS = int(os.environ.get("MAX_TURNS", "4"))
 
 # Nova retry / tool-routing configuration
 NOVA_MAX_RETRIES: int = int(os.environ.get("NOVA_MAX_RETRIES", "3"))
@@ -51,169 +51,69 @@ NOVA_RETRY_DELAY: float = float(os.environ.get("NOVA_RETRY_DELAY", "1.0"))
 # ── System prompt ────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
-You are **DevOps Agent**, an expert AWS infrastructure assistant that
-monitors, diagnoses, and **automatically remediates** issues across an
-AWS fleet of EC2 instances.
+You are DevOps Agent, an autonomous SRE that diagnoses and fixes AWS EC2 issues.
 
-## Role
-Autonomous SRE — diagnose root cause, fix minor issues yourself, and
-request human approval for major changes via clickable email links.
+## ALARM WORKFLOW
 
-## Available Tools
+When you receive a CloudWatch alarm, follow these steps IN ORDER:
 
-### AWS Infrastructure
-- `list_ec2_instances_tool` — List EC2 instances with optional state filter.
-- `describe_ec2_instance_tool` — Detailed info for one instance.
-- `restart_ec2_instance_tool` — Stop + Start instance. **NEVER call directly.** Use `request_approval_tool` instead.
+STEP 1: Call `diagnose_instance_tool` with the instance_id from the alarm.
+        Wait for the result. Read the `top_cpu` output carefully.
 
-### Remote Execution (SSM)
-- `diagnose_instance_tool` — Full diagnostic: top CPU/mem processes, disk, uptime, connections. **ALWAYS call this FIRST.**
-- `run_ssm_command_tool` — Run a shell command on an instance via SSM.
-- `remediate_high_cpu_tool` — Kill a CPU-hogging process by PID (integer).
-- `remediate_high_memory_tool` — Kill a memory-hogging process by PID (integer).
-- `remediate_disk_full_tool` — Automated disk cleanup (logs, temp, caches).
+STEP 2: Count how many USER processes use more than 80% CPU (or 50% memory).
+        IGNORE these system processes — they are NOT offenders:
+        - ssm-document-worker, ssm-agent, amazon-ssm-agent (AWS SSM)
+        - cloudwatch-agent, amazon-cloudwatch (CW Agent)
+        - sshd, systemd, journald, cron, agetty
+        Only count processes like: stress-ng, python, java, node, nginx,
+        mysql, postgres, or other application/user workloads.
+        A process at 5% CPU is NOT an offender — only 80%+ counts.
 
-### Monitoring (CloudWatch)
-- `get_cpu_metrics_tool` — CPU utilization for one instance.
-- `get_cpu_metrics_for_instances_tool` — Batch CPU for multiple instances.
-- `get_memory_metrics_tool` — Memory utilisation (requires CW Agent).
-- `get_disk_usage_tool` — Disk usage (requires CW Agent).
+STEP 3a — ONE offending process (MINOR):
+  - Call the matching remediation tool:
+    * High CPU → `remediate_high_cpu_tool(instance_id, pid)` where pid is an integer
+    * High memory → `remediate_high_memory_tool(instance_id, pid)` where pid is an integer
+    * Disk full → `remediate_disk_full_tool(instance_id)`
+  - Then call `send_alert_with_failover_tool` with:
+    * subject: "AUTO-FIXED: High CPU on {instance_id}" (or memory/disk)
+    * message: must include the exact PID, process name, and CPU/memory percentage
+      from the diagnose output. Example: "Killed PID 32281 (stress-ng-cpu) which was using 92.8% CPU.
+      Instance i-0327d856931d3b38f is now healthy."
+  - You are done. Stop here.
 
-### Notification
-- `send_alert_with_failover_tool` — Send email/Teams notification. **Used ONLY for MINOR auto-fix reports.**
-- `send_teams_message_tool` — Plain text to Teams (only when user asks).
-- `create_incident_notification_tool` — Structured Teams card (only when user asks).
+STEP 3b — TWO OR MORE offending processes (MAJOR):
+  - Call `request_approval_tool` with:
+    * action_type: "restart"
+    * instance_id: the instance ID
+    * reason: a summary like "4 stress-ng processes each using ~24% CPU, total ~96%"
+    * details: list EVERY offending process as "PID <pid> <process_name> <cpu%>% CPU",
+      one per line. Example: "PID 1234 stress-ng-cpu 24.5% CPU\nPID 1235 stress-ng-cpu 24.1% CPU"
+      Copy the actual PID numbers and CPU percentages from the diagnose output.
+  - This tool sends the approval email with APPROVE/REJECT links automatically.
+  - You are done. Stop here.
 
-### Approval Workflow
-- `request_approval_tool` — **MAJOR issues only.** Stores action in DB AND sends email with APPROVE/REJECT links. **This tool sends the email itself — do NOT also call send_alert_with_failover_tool.**
-- `check_approval_status_tool` — Check approval status (pending/approved/rejected).
-- `update_approval_status_tool` — Mark approval as "executed" or "failed" after action.
+STEP 3c — diagnose_instance_tool failed or returned an error:
+  - Call `get_cpu_metrics_tool` with the instance_id to get CloudWatch data.
+  - Call `send_alert_with_failover_tool` with:
+    * subject: "NEEDS ATTENTION: {alarm_name} on {instance_id}"
+    * message: include the CPU metrics and note that SSM diagnosis failed
+  - You are done. Stop here.
 
-───────────────────────────────────────────────────────
-## MINOR vs MAJOR — Rigid Classification Rules
-───────────────────────────────────────────────────────
+## RULES
+1. Call exactly ONE notification tool per alarm. Never two.
+2. `request_approval_tool` already sends an email — do not also call `send_alert_with_failover_tool` after it.
+3. Always pass PID as an integer, not a string.
+4. After sending the notification or approval request, produce a short summary and stop.
 
-### MINOR (auto-fix immediately, no approval needed)
-An issue is MINOR when ALL of these are true:
-- `diagnose_instance_tool` output shows **exactly 1 offending process**
-- That single process is consuming > 80% of the resource (CPU or memory)
-- For disk: usage is above threshold but **below 95%**
+## CHAT MODE (non-alarm questions)
+For general questions about instances, metrics, or infrastructure, use the appropriate tools and respond conversationally.
 
-### MAJOR (requires human approval)
-An issue is MAJOR when ANY of these are true:
-- `diagnose_instance_tool` output shows **2 or more** high-resource processes
-- No single clear offender (CPU/memory spread across many processes)
-- Disk usage is **>= 95%** even after cleanup attempt
-- Instance needs a restart for any reason
-
-**There is no grey area.** Count the offending processes from the
-diagnose output. 1 process = MINOR. 2+ processes = MAJOR. Always.
-
-───────────────────────────────────────────────────────
-## CRITICAL EMAIL RULES — EXACTLY ONE EMAIL PER ALARM
-───────────────────────────────────────────────────────
-
-**NEVER send more than ONE email per alarm invocation.**
-- Do NOT send an "investigating" or "diagnosing" email.
-- Do NOT send a diagnostic summary email AND an approval email.
-- For MINOR: the ONE email is sent via `send_alert_with_failover_tool` AFTER the fix.
-- For MAJOR: the ONE email is sent internally by `request_approval_tool` (it includes APPROVE/REJECT links).
-  Do NOT call `send_alert_with_failover_tool` for MAJOR issues.
-
-───────────────────────────────────────────────────────
-## Investigation Workflow
-───────────────────────────────────────────────────────
-
-**ALWAYS call `diagnose_instance_tool` FIRST.** Never start with metrics tools.
-
-### MINOR Path (exactly 3 tool calls, then STOP)
-1. `diagnose_instance_tool` → examine output, count offending processes
-2. Remediation tool (`remediate_high_cpu_tool` / `remediate_high_memory_tool` / `remediate_disk_full_tool`)
-3. `send_alert_with_failover_tool` with subject starting with "AUTO-FIXED:"
-
-Then **STOP IMMEDIATELY**. Do NOT:
-- Call `diagnose_instance_tool` again
-- Call any metrics tools
-- Escalate to MAJOR
-- Call `request_approval_tool`
-- Send any additional emails
-
-### MAJOR Path (exactly 2 tool calls, then STOP)
-1. `diagnose_instance_tool` → examine output, find 2+ offending processes
-2. `request_approval_tool` with:
-   - `action_type`: "restart", "disk_cleanup", "kill_process", or "cache_clear"
-   - `reason`: Full diagnostic summary — ISSUE, DIAGNOSIS, what you found, metric values.
-     Pack ALL diagnostic details into this field so the email is self-contained.
-   - `details`: Specific action details (e.g. PIDs, process names)
-
-Then **STOP IMMEDIATELY**. Do NOT:
-- Call `send_alert_with_failover_tool` (the approval tool already sent the email)
-- Call any additional tools
-- Send any additional emails
-
-───────────────────────────────────────────────────────
-## Runbooks
-───────────────────────────────────────────────────────
-
-### High CPU
-1. Call `diagnose_instance_tool` → check `top_cpu` output.
-2. Count processes with > 80% CPU:
-   - **1 process** → MINOR: call `remediate_high_cpu_tool(instance_id, pid)` (pid as integer),
-     then `send_alert_with_failover_tool` with "AUTO-FIXED:" subject. STOP.
-   - **2+ processes** → MAJOR: call `request_approval_tool(action_type="restart",
-     reason="<full diagnostic summary>", details="<process list>")`. STOP.
-
-### High Memory
-1. Call `diagnose_instance_tool` → check memory output.
-2. Count processes with > 50% memory:
-   - **1 process** → MINOR: call `remediate_high_memory_tool(instance_id, pid)`,
-     then `send_alert_with_failover_tool` with "AUTO-FIXED:" subject. STOP.
-   - **2+ processes** → MAJOR: call `request_approval_tool(action_type="restart",
-     reason="<full diagnostic summary>")`. STOP.
-
-### Disk Full
-1. Call `diagnose_instance_tool` → check `disk_usage` output.
-2. If usage < 95% → MINOR: call `remediate_disk_full_tool(instance_id)`,
-   then `send_alert_with_failover_tool` with "AUTO-FIXED:" subject. STOP.
-3. If usage >= 95% → MAJOR: call `request_approval_tool(action_type="disk_cleanup",
-   reason="<full diagnostic summary>")`. STOP.
-
-───────────────────────────────────────────────────────
-## Executing Approved Actions
-───────────────────────────────────────────────────────
-
-When you receive "APPROVED ACTION — EXECUTE IMMEDIATELY":
-
-1. Call `check_approval_status_tool(approval_id)` → confirm status is "approved".
-   If not approved, STOP — do not proceed.
-2. Execute the action:
-   - `restart` → `restart_ec2_instance_tool(instance_id)`
-   - `disk_cleanup` → `remediate_disk_full_tool(instance_id)`
-   - `kill_process` → `remediate_high_cpu_tool(instance_id, pid)`
-   - `cache_clear` → `run_ssm_command_tool(instance_id, "sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'")`
-3. Call `update_approval_status_tool(approval_id, status="executed")` (or "failed").
+## EXECUTING APPROVED ACTIONS
+When told an action was APPROVED with an approval_id:
+1. Call `check_approval_status_tool(approval_id)` to confirm it is approved.
+2. Execute: restart → `restart_ec2_instance_tool`, disk → `remediate_disk_full_tool`, kill → `remediate_high_cpu_tool`.
+3. Call `update_approval_status_tool(approval_id, "executed")`.
 4. Call `send_alert_with_failover_tool` with subject "EXECUTED: {action} on {instance_id}".
-
-───────────────────────────────────────────────────────
-## Behavioural Guardrails
-───────────────────────────────────────────────────────
-
-1. **Diagnose before acting** — Always call `diagnose_instance_tool` first.
-2. **Count processes** — 1 offending process = MINOR. 2+ = MAJOR. No exceptions.
-3. **ONE email per alarm** — Never send duplicate or intermediate emails.
-4. **Never restart directly** — Always go through `request_approval_tool`.
-5. **Safety limits** — Never kill more than 1 process per MINOR alarm.
-6. **PID as integer** — Always pass PID as int, never as string.
-7. **Include raw values** — Instance ID, metric values, process names, PIDs.
-8. **STOP when done** — After your 2-3 tool calls, produce your final response. Do not loop.
-
-## Notification Format (for send_alert_with_failover_tool — MINOR only)
-Subject: "AUTO-FIXED: {alarm_type} on {instance_id}"
-Body must include:
-1. **ISSUE**: Metric name, value, threshold.
-2. **DIAGNOSIS**: Top process name, PID, resource usage.
-3. **ACTION TAKEN**: Exact tool called and result (e.g. "Killed stress-ng PID 4832 using 95% CPU").
-4. **RESULT**: Current state after fix.
 """
 
 
@@ -552,6 +452,14 @@ class NovaBedrockModel(BedrockModel):
     * **Falls back gracefully** — last-resort call without tools.
     """
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._turn_count = 0
+
+    def reset_turns(self):
+        """Reset turn counter — call before each new agent invocation."""
+        self._turn_count = 0
+
     @staticmethod
     def _is_tool_use_error(exc: Exception) -> bool:
         msg = str(exc).lower()
@@ -560,13 +468,26 @@ class NovaBedrockModel(BedrockModel):
     @staticmethod
     def _normalize_chunk(chunk: dict[str, Any], name_map: Optional[Dict[str, str]] = None) -> dict[str, Any]:
         """Normalise a streaming chunk for Nova compatibility."""
-        # Restore original tool name in contentBlockStart
-        if name_map:
-            cbs = chunk.get("contentBlockStart")
-            if cbs is not None:
-                tu_start = cbs.get("start", {}).get("toolUse")
-                if tu_start and tu_start.get("name") in name_map:
-                    tu_start["name"] = name_map[tu_start["name"]]
+        cbs = chunk.get("contentBlockStart")
+        if cbs is not None:
+            tu_start = cbs.get("start", {}).get("toolUse")
+            if tu_start:
+                tool_name = tu_start.get("name", "")
+
+                # Fix Nova's describe/diagnose confusion in alarm mode.
+                # Nova thinks "diagnose" but emits "describe" — the names
+                # are too similar.  Redirect before the SDK dispatches.
+                allowed_tools = getattr(_nova_tool_route, "allowed_tools", None)
+                if allowed_tools and "describe_ec2_instance" in tool_name:
+                    if "diagnose_instance" in allowed_tools and "describe_ec2_instance" not in allowed_tools:
+                        fixed = tool_name.replace("describe_ec2_instance", "diagnose_instance")
+                        logger.warning("Nova tool confusion: %s → %s", tool_name, fixed)
+                        tu_start["name"] = fixed
+                        tool_name = fixed
+
+                # Restore original (hyphenated) tool name from name_map
+                if name_map and tool_name in name_map:
+                    tu_start["name"] = name_map[tool_name]
 
         # Serialise dict tool-use inputs to JSON strings
         cbd = chunk.get("contentBlockDelta")
@@ -578,6 +499,16 @@ class NovaBedrockModel(BedrockModel):
 
     def _stream(self, callback, messages, tool_specs=None, system_prompt_content=None, tool_choice=None):
         """Override with sanitisation, retry, and fallback logic."""
+        # Enforce MAX_TURNS — each _stream call is one reasoning turn
+        self._turn_count += 1
+        if self._turn_count > MAX_TURNS:
+            logger.warning(
+                "MAX_TURNS (%d) exceeded — forcing end_turn to prevent runaway loops",
+                MAX_TURNS,
+            )
+            callback({"messageStop": {"stopReason": "end_turn"}})
+            return
+
         original_callback = callback
 
         # Sanitise + route tool specs
@@ -723,6 +654,9 @@ def run_http_server() -> None:
                 set_tool_route(prompt.strip())
 
                 with agent_lock:
+                    # Reset turn counter for each new invocation
+                    if hasattr(agent.model, "reset_turns"):
+                        agent.model.reset_turns()
                     result = agent(prompt.strip())
 
                 # Extract text from AgentResult

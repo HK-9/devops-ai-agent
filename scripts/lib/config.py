@@ -53,7 +53,7 @@ MCP_SERVERS = {
 AGENT_NAME = "devops_agent"
 AGENT_ECR_REPO = f"bedrock_agentcore-{AGENT_NAME}"
 AGENT_ROLE = "devops-agent-runner"
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
+MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-pro-v1:0")
 
 # ── Gateway ──────────────────────────────────────────────────────────────
 

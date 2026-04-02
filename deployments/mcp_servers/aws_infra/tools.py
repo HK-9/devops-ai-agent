@@ -11,8 +11,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from config import settings
 from aws_helpers import get_client, safe_boto_call, setup_logging
+from config import settings
 
 logger = setup_logging("mcp.aws-infra")
 
@@ -72,17 +72,19 @@ async def list_ec2_instances(
                     name = tag["Value"]
                     break
 
-            instances.append({
-                "instance_id": inst["InstanceId"],
-                "instance_type": inst.get("InstanceType", ""),
-                "state": inst["State"]["Name"],
-                "launch_time": str(inst.get("LaunchTime", "")),
-                "public_ip": inst.get("PublicIpAddress", "N/A"),
-                "private_ip": inst.get("PrivateIpAddress", "N/A"),
-                "name": name,
-                "availability_zone": inst.get("Placement", {}).get("AvailabilityZone", ""),
-                "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
-            })
+            instances.append(
+                {
+                    "instance_id": inst["InstanceId"],
+                    "instance_type": inst.get("InstanceType", ""),
+                    "state": inst["State"]["Name"],
+                    "launch_time": str(inst.get("LaunchTime", "")),
+                    "public_ip": inst.get("PublicIpAddress", "N/A"),
+                    "private_ip": inst.get("PrivateIpAddress", "N/A"),
+                    "name": name,
+                    "availability_zone": inst.get("Placement", {}).get("AvailabilityZone", ""),
+                    "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
+                }
+            )
 
     logger.info("Listed %d EC2 instances (filter=%s)", len(instances), state_filter)
     return {"instances": instances, "count": len(instances)}
@@ -124,10 +126,7 @@ async def describe_ec2_instance(instance_id: str) -> dict[str, Any]:
         "availability_zone": inst.get("Placement", {}).get("AvailabilityZone", ""),
         "vpc_id": inst.get("VpcId", ""),
         "subnet_id": inst.get("SubnetId", ""),
-        "security_groups": [
-            {"id": sg["GroupId"], "name": sg["GroupName"]}
-            for sg in inst.get("SecurityGroups", [])
-        ],
+        "security_groups": [{"id": sg["GroupId"], "name": sg["GroupName"]} for sg in inst.get("SecurityGroups", [])],
         "iam_role": inst.get("IamInstanceProfile", {}).get("Arn", "N/A"),
         "tags": {t["Key"]: t["Value"] for t in inst.get("Tags", [])},
         "ebs_volumes": [
@@ -190,11 +189,13 @@ def _state_changes(resp: dict[str, Any]) -> list[dict[str, str]]:
     """Extract state transitions from a stop/start response."""
     changes = []
     for sc in resp.get("StoppingInstances", resp.get("StartingInstances", [])):
-        changes.append({
-            "instance_id": sc["InstanceId"],
-            "previous_state": sc["PreviousState"]["Name"],
-            "current_state": sc["CurrentState"]["Name"],
-        })
+        changes.append(
+            {
+                "instance_id": sc["InstanceId"],
+                "previous_state": sc["PreviousState"]["Name"],
+                "current_state": sc["CurrentState"]["Name"],
+            }
+        )
     return changes
 
 
@@ -255,7 +256,10 @@ async def run_ssm_command(
             stderr = inv_resp.get("StandardErrorContent", "")
             logger.info(
                 "SSM command %s on %s finished: %s (stdout=%d bytes)",
-                command_id, instance_id, status, len(stdout),
+                command_id,
+                instance_id,
+                status,
+                len(stdout),
             )
             return {
                 "command_id": command_id,
@@ -277,8 +281,8 @@ async def run_ssm_command(
 async def diagnose_instance(instance_id: str) -> dict[str, Any]:
     """Run a suite of diagnostic commands on an EC2 instance via SSM.
 
-    Collects: top processes (CPU + memory), disk usage, and active
-    connections.  Returns a combined diagnostic report.
+    All checks are combined into a single SSM command to minimise
+    round-trips and avoid container timeouts.
 
     Args:
         instance_id: Target EC2 instance ID.
@@ -286,26 +290,76 @@ async def diagnose_instance(instance_id: str) -> dict[str, Any]:
     Returns:
         Dict with ``diagnostics`` containing output from each check.
     """
-    checks = {
-        "top_cpu": "ps aux --sort=-%cpu | head -15",
-        "top_memory": "ps aux --sort=-%mem | head -15",
-        "disk_usage": "df -h",
-        "memory_info": "free -h",
-        "uptime_load": "uptime",
-        "active_connections": "ss -tunap | head -30",
+    # All diagnostics in ONE shell script with section markers
+    combined_script = (
+        "echo '===TOP_CPU===';"
+        "ps aux --sort=-%cpu | head -15;"
+        "echo '===TOP_MEMORY===';"
+        "ps aux --sort=-%mem | head -15;"
+        "echo '===DISK_USAGE===';"
+        "df -h;"
+        "echo '===MEMORY_INFO===';"
+        "free -h;"
+        "echo '===UPTIME_LOAD===';"
+        "uptime;"
+        "echo '===ACTIVE_CONNECTIONS===';"
+        "ss -tunap 2>/dev/null | head -30"
+    )
+
+    # Section markers → diagnostic keys + original commands (for reference)
+    sections = {
+        "TOP_CPU": ("top_cpu", "ps aux --sort=-%cpu | head -15"),
+        "TOP_MEMORY": ("top_memory", "ps aux --sort=-%mem | head -15"),
+        "DISK_USAGE": ("disk_usage", "df -h"),
+        "MEMORY_INFO": ("memory_info", "free -h"),
+        "UPTIME_LOAD": ("uptime_load", "uptime"),
+        "ACTIVE_CONNECTIONS": ("active_connections", "ss -tunap | head -30"),
     }
 
+    result = await run_ssm_command(instance_id, combined_script, timeout_seconds=45)
+    raw_output = result.get("stdout", "")
+    overall_status = result.get("status", "unknown")
+
+    # Parse combined output into sections
     diagnostics: dict[str, Any] = {}
-    for name, cmd in checks.items():
-        result = await run_ssm_command(instance_id, cmd, timeout_seconds=30)
-        diagnostics[name] = {
+    for marker, (key, cmd) in sections.items():
+        start_tag = f"==={marker}==="
+        start_idx = raw_output.find(start_tag)
+        if start_idx == -1:
+            diagnostics[key] = {
+                "command": cmd,
+                "status": overall_status,
+                "output": "",
+                "error": "Section not found in output",
+            }
+            continue
+
+        # Content starts after the marker line
+        content_start = raw_output.find("\n", start_idx)
+        if content_start == -1:
+            content_start = start_idx + len(start_tag)
+        else:
+            content_start += 1
+
+        # Content ends at the next marker or end of output
+        content_end = len(raw_output)
+        for other_marker in sections:
+            if other_marker == marker:
+                continue
+            other_tag = f"==={other_marker}==="
+            other_idx = raw_output.find(other_tag, content_start)
+            if other_idx != -1 and other_idx < content_end:
+                content_end = other_idx
+
+        section_output = raw_output[content_start:content_end].strip()
+        diagnostics[key] = {
             "command": cmd,
-            "status": result.get("status", "unknown"),
-            "output": result.get("stdout", result.get("message", "")),
-            "error": result.get("stderr", ""),
+            "status": overall_status,
+            "output": section_output,
+            "error": "",
         }
 
-    logger.info("Diagnostics completed for %s (%d checks)", instance_id, len(diagnostics))
+    logger.info("Diagnostics completed for %s (single SSM call, %d sections parsed)", instance_id, len(diagnostics))
     return {"instance_id": instance_id, "diagnostics": diagnostics}
 
 
