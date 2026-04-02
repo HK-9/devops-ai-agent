@@ -324,19 +324,44 @@ INTENT_KEYWORDS: Dict[str, List[str]] = {
 DEFAULT_CATEGORIES = ["ec2", "monitoring"]
 
 
-# When an alarm fires, the agent needs tools from ALL categories:
-# - ec2: diagnose_instance_tool (MUST be first call)
-# - monitoring: get_cpu_metrics_tool etc. (for correlation)
-# - remediation: remediate_high_cpu_tool etc. (to fix the issue)
-# - approval: request_approval_tool (for MAJOR issues)
-ALARM_CATEGORIES = ["ec2", "monitoring", "remediation", "approval"]
+# When an alarm fires, the agent needs a SPECIFIC set of tools.
+# CRITICAL: Do NOT include describe_ec2_instance or list_ec2_instances here.
+# Nova confuses "describe" with "diagnose" (similar prefixes) and loops.
+# The agent only needs: diagnose → remediate → notify/approve.
+ALARM_TOOLS: List[str] = [
+    # Step 1: diagnose (MUST be first call)
+    "diagnose_instance",
+    # Step 2a (MINOR): auto-fix
+    "remediate_high_cpu",
+    "remediate_high_memory",
+    "remediate_disk_full",
+    "run_ssm_command",
+    # Step 2b (MAJOR): request approval
+    "request_approval",
+    "check_approval_status",
+    "update_approval_status",
+    # Step 3: notify
+    "send_alert_with_failover",
+    # Correlation (optional, agent may check metrics)
+    "get_cpu_metrics",
+    "get_memory_metrics",
+    "get_disk_usage",
+]
 
 
-def detect_categories(prompt: str) -> List[str]:
-    """Detect which tool categories are relevant for *prompt*."""
+def detect_intent(prompt: str) -> List[str]:
+    """Return tool-name substrings relevant for *prompt*.
+
+    For alarm prompts, returns the specific ``ALARM_TOOLS`` list which
+    deliberately excludes ``describe_ec2_instance`` and
+    ``list_ec2_instances`` to prevent Nova from confusing them with
+    ``diagnose_instance``.
+
+    For non-alarm prompts, returns tools based on category matching.
+    """
     prompt_lower = prompt.lower()
 
-    # Alarm prompts need the full remediation toolkit
+    # ── Alarm prompts → specific tool list (no describe/list) ────────
     if any(
         kw in prompt_lower
         for kw in (
@@ -346,10 +371,12 @@ def detect_categories(prompt: str) -> List[str]:
             "investigate",
             "threshold crossed",
             "state: alarm",
+            "approved action",
         )
     ):
-        return ALARM_CATEGORIES
+        return ALARM_TOOLS
 
+    # ── Non-alarm prompts → category-based routing ───────────────────
     matched: List[str] = []
 
     for category, keywords in INTENT_KEYWORDS.items():
@@ -362,11 +389,9 @@ def detect_categories(prompt: str) -> List[str]:
             if cat not in matched:
                 matched.append(cat)
 
-    return matched or DEFAULT_CATEGORIES
+    categories = matched or DEFAULT_CATEGORIES
 
-
-def get_allowed_tool_names(categories: List[str]) -> List[str]:
-    """Return a flat list of tool-name substrings for the given categories."""
+    # Flatten categories to tool-name substrings
     names: List[str] = []
     for cat in categories:
         names.extend(TOOL_CATEGORIES.get(cat, []))
@@ -628,10 +653,9 @@ def set_tool_route(prompt: str) -> None:
         _nova_tool_route.allowed_tools = None
         return
 
-    categories = detect_categories(prompt)
-    allowed = get_allowed_tool_names(categories)
+    allowed = detect_intent(prompt)
     _nova_tool_route.allowed_tools = allowed
-    logger.info("Intent categories: %s → %d tool patterns", categories, len(allowed))
+    logger.info("Tool route: %d tool patterns → %s", len(allowed), allowed[:6])
 
 
 def create_agent(mcp_client: MCPClient, http_mode: bool = False, streaming: bool = True) -> Agent:
