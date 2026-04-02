@@ -281,45 +281,108 @@ Removed the "DevOps Agent is investigating..." SNS email that caused duplicates.
 
 ---
 
+## Real Stress Test Results (2026-04-02)
+
+### Test: SSH into i-0bf11b006e8f12844 → `stress-ng --cpu 1 --cpu-load 95 --timeout 600s`
+
+**Pipeline worked end-to-end:**
+- ✅ CloudWatch alarm `devops-agent-high-cpu-e8f12844` fired naturally at 95% CPU
+- ✅ EventBridge → Lambda triggered, parsed alarm correctly
+- ✅ Lambda invoked AgentCore agent
+- ✅ Agent received prompt, started processing
+
+**But agent went off-track:**
+- ❌ `diagnose_instance_tool` likely timed out (SSM too slow → 502)
+- ❌ Agent fell back to `get_cpu_metrics_tool` → got data
+- ❌ Agent tried `get_memory_metrics_tool` → no data (CW Agent not installed on this instance)
+- ❌ Agent decided to "install CloudWatch Agent" instead of remediating CPU
+- ❌ Sent 3 emails instead of 1:
+  1. "High CPU Utilization Alert on i-0bf11b006e8f12844"
+  2. "Approval Request for CloudWatch Agent Configuration"
+  3. Duplicate of #2
+- ❌ No APPROVE/REJECT links (used `send_alert_with_failover_tool` instead of `request_approval_tool`)
+
+### Fix Applied: Removed describe/list from alarm tools (v17)
+
+`describe_ec2_instance_tool` and `list_ec2_instances_tool` are now excluded
+from alarm prompts via specific `ALARM_TOOLS` list. This is isolated —
+chat prompts still get the full tool set.
+
+---
+
 ## Immediate Next Steps (BLOCKERS)
 
-### 🔴 BLOCKER: Nova calls `describe` instead of `diagnose` in alarm flow
+### 🔴 BLOCKER #1: `diagnose_instance_tool` times out via SSM
 
-When an alarm fires, the agent's `<thinking>` says "I should call
-diagnose_instance_tool" but then actually outputs `describe_ec2_instance_tool`
-and loops. The full pipeline works (EventBridge → Lambda → Agent) but the
-agent picks the wrong tool.
+The agent's FIRST call should be `diagnose_instance_tool`, but it returns
+502 because SSM commands on these instances take too long for the container
+timeout. When diagnose fails, the agent falls back to CloudWatch metrics
+and goes completely off-track.
 
-**Hypothesis:** With 15 sanitized tools, Nova is confused between
-`aws_infra_target___describe_ec2_instance_tool` and
-`aws_infra_target___diagnose_instance_tool` (similar prefixes).
+**Possible fixes:**
+1. **Increase container/SSM timeout** — check AgentCore runtime timeout settings
+   and the SSM `TimeoutSeconds` in the aws-infra MCP server tools
+2. **Test on `i-0327d856931d3b38f` (test-4)** — this instance is in a public
+   subnet, SSM may be faster. The test was on `i-0bf11b006e8f12844` (private subnet)
+3. **Simplify `diagnose_instance_tool`** — it runs 5+ SSM commands sequentially
+   (top, df, free, uptime, ss). Reduce to just `top` for CPU alarms
+4. **Add a lightweight diagnose** — create a `quick_diagnose_tool` that only
+   runs `ps aux --sort=-%cpu | head -10` (single fast command)
 
-**Possible fixes to try:**
-1. Reduce alarm tools further — maybe only send `diagnose_instance_tool` +
-   remediation tools + approval (skip `describe` and `list` for alarms)
-2. Make the system prompt even more explicit: "For alarms, your FIRST tool
-   call MUST be `diagnose_instance_tool`. Do NOT call `describe_ec2_instance_tool`."
-3. Check if the reverse name mapping is causing the issue — maybe the model
-   outputs the sanitized name but the SDK resolves it to the wrong original
-4. Try Nova Pro instead of Nova Lite for alarm handling (more capable)
-5. Test with only 5-6 tools for alarms instead of 15
+### 🔴 BLOCKER #2: Nova sends multiple emails / goes off-track
+
+Even with the system prompt saying "ONE email per alarm, then STOP", Nova:
+- Sends 2-3 emails per alarm
+- Goes off on tangents (trying to install CW Agent)
+- Doesn't stop after the first notification
+
+**Possible fixes:**
+1. **Switch to Nova Pro** (`amazon.nova-pro-v1:0`) — more capable, may follow
+   instructions better than Nova Lite
+2. **Reduce MAX_TURNS** — currently 8, reduce to 3-4 for alarm prompts so
+   the agent is forced to stop after fewer tool calls
+3. **Hard-code the alarm workflow** — instead of relying on the LLM to follow
+   a multi-step runbook, implement the MINOR/MAJOR logic in Python code that
+   calls tools directly, using the LLM only for classification
+4. **Use Claude** — fix AWS billing to unlock Anthropic models; Claude follows
+   multi-step instructions much more reliably than Nova
+
+### 🔴 BLOCKER #3: No APPROVE/REJECT links in MAJOR emails
+
+The agent calls `send_alert_with_failover_tool` (plain notification) instead
+of `request_approval_tool` (which generates the clickable links). The system
+prompt is clear about this, but Nova doesn't follow the distinction.
+
+**Same root cause as Blocker #2** — Nova LLM not following complex instructions.
 
 ### Other Known Issues
 
-1. **AWS billing** — Fix payment instrument to unlock Claude (best long-term fix)
+1. **AWS billing** — Fix payment instrument to unlock Claude (best long-term fix — Claude follows multi-step runbooks reliably)
 2. **CDK deploy broken** — `AWS_REGION` env var is reserved by Lambda runtime; CDK stack needs fix in `agent_runner_stack.py` line ~130
-3. **`strands-agents-tools`** — Listed in requirements but not installed (not needed)
-4. **Python 3.14** — Colleague likely used 3.12/3.13
-5. **Pre-commit hooks** — Missing `.pre-commit-config.yaml`; use `PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit ...`
-6. **X-Ray permissions** — Non-blocking `xray:PutTraceSegments` 403 errors in agent logs; add IAM permission to `devops-agent-runner` role
-7. **Diagnose/SSM timeout** — `diagnose_instance_tool` sometimes returns 502 due to SSM command taking too long; may need to increase agent container timeout
+3. **CW Agent not installed on i-0bf11b006e8f12844** — memory/disk metrics return no data, causing agent to go off-track trying to install it
+4. **`strands-agents-tools`** — Listed in requirements but not installed (not needed)
+5. **Python 3.14** — Colleague likely used 3.12/3.13
+6. **Pre-commit hooks** — Missing `.pre-commit-config.yaml`; use `PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit ...`
+7. **X-Ray permissions** — Non-blocking `xray:PutTraceSegments` 403 errors in agent logs; add IAM permission to `devops-agent-runner` role
+
+---
+
+## Recommended Next Session Priority
+
+1. **Fix diagnose timeout** — this is the root of all problems. If diagnose works,
+   the agent sees the actual stress-ng process and can act correctly
+2. **Try Nova Pro** — switch `MODEL_ID` to `amazon.nova-pro-v1:0`, redeploy, retest.
+   Pro is more capable and may follow the runbook correctly
+3. **If Nova Pro also fails** — consider implementing the alarm workflow as
+   deterministic Python code (not LLM-driven) that calls MCP tools directly
+4. **If billing gets fixed** — switch to Claude immediately, all these issues disappear
 
 ---
 
 ## Useful Commands
 
 ```bash
-# Start web app
+# Start web app (must be from project root)
 cd C:\Users\pvhar\Work\devops-ai-agent
 .venv\Scripts\activate
 python web/app.py
@@ -329,9 +392,10 @@ python scripts/deploy_agent.py deploy
 python scripts/deploy_agent.py status
 python scripts/deploy_agent.py logs --minutes 5
 
-# Test agent directly
+# Test agent directly (non-alarm tools work fine)
 python scripts/deploy_agent.py invoke "List all EC2 instances"
-python scripts/deploy_agent.py invoke "Diagnose instance i-0327d856931d3b38f"
+python scripts/deploy_agent.py invoke "Describe instance i-0327d856931d3b38f"
+python scripts/deploy_agent.py invoke "Show CPU metrics for i-0327d856931d3b38f"
 
 # Update Lambda code (handler is 'lambda_handler.handler')
 python -c "
@@ -349,6 +413,14 @@ python scripts/test_remediation.py -i i-0327d856931d3b38f --type cpu --scenario 
 python scripts/test_remediation.py -i i-0327d856931d3b38f --type cpu --scenario major --mock-only
 python scripts/test_remediation.py --logs --minutes 5
 python scripts/test_remediation.py -i i-0327d856931d3b38f --restore
+
+# Real stress test from SSH (MINOR = 1 process, MAJOR = 4 processes)
+# SSH into instance first:
+#   ssh -i <key.pem> ec2-user@<public-ip>
+#   OR: aws ssm start-session --target <instance-id> --region ap-southeast-2
+# MINOR: stress-ng --cpu 1 --cpu-load 95 --timeout 600s
+# MAJOR: for i in 1 2 3 4; do stress-ng --cpu 1 --cpu-load 85 --timeout 600s & done
+# Then wait 5-10 min for CloudWatch alarm to fire naturally
 
 # Commit bypassing pre-commit
 PRE_COMMIT_ALLOW_NO_CONFIG=1 git add -A
