@@ -102,11 +102,11 @@ def handler(event, context):
     print(f"Parsed: name={alarm['alarm_name']} instance={alarm['instance_id']} state={alarm['state']}")
 
     alarm_type = _detect_alarm_type(alarm["alarm_name"])
-    label = _ALARM_LABELS.get(alarm_type, "Alert")
-    _send_sns(
-        subject=f"{label}: {alarm['alarm_name']}",
-        message=f"Instance: {alarm['instance_id']}\nAlarm: {alarm['alarm_name']}\nReason: {alarm['reason']}\n\nDevOps Agent is investigating...",
-    )
+
+    # NOTE: Do NOT send an "investigating" SNS email here.
+    # The agent will send exactly ONE notification after it finishes
+    # (either "AUTO-FIXED" for MINOR or approval email for MAJOR).
+    # Sending here caused duplicate emails.
 
     prompt = f"""A CloudWatch alarm fired for instance {alarm["instance_id"]}.
 Alarm: {alarm["alarm_name"]}. Reason: {alarm["reason"]}. State: {alarm["state"]}. Timestamp: {alarm["timestamp"]}.
