@@ -3,23 +3,30 @@ DevOps AI Agent — Strands Agent with MCP Gateway tools.
 
 Connects to the AgentCore Gateway via streamable-http to access all
 MCP server tools (AWS Infra, Monitoring, SNS, Teams).  Uses Bedrock
-Nova Lite as the foundation model with Strands' native reasoning loop.
+Nova as the default foundation model with Strands' native reasoning loop.
+
+This module is the **single source of truth** for all agent logic:
+tool name sanitization, intent-based routing, Nova workarounds, retry
+logic, and model configuration.  The web app (``web/agent.py``) imports
+from here rather than duplicating any of this.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
-from typing import Any
+import re
+import time
+from typing import Any, Dict, List, Optional
 
+from mcp.client.streamable_http import streamablehttp_client
+from sigv4_auth import BotoSigV4Auth
 from strands import Agent
 from strands.agent.agent import null_callback_handler
 from strands.models.bedrock import BedrockModel
 from strands.tools.mcp import MCPClient
-from mcp.client.streamable_http import streamablehttp_client
-
-from sigv4_auth import BotoSigV4Auth
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -33,9 +40,13 @@ GATEWAY_URL = os.environ.get(
     "GATEWAY_URL",
     "https://devopsagentgatewayv3-ar4lmz2x6t.gateway.bedrock-agentcore.ap-southeast-2.amazonaws.com/mcp",
 )
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-pro-v1:0")
+MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "8"))
+
+# Nova retry / tool-routing configuration
+NOVA_MAX_RETRIES: int = int(os.environ.get("NOVA_MAX_RETRIES", "3"))
+NOVA_RETRY_DELAY: float = float(os.environ.get("NOVA_RETRY_DELAY", "1.0"))
 
 # ── System prompt ────────────────────────────────────────────────────────
 
@@ -248,26 +259,300 @@ def create_gateway_mcp_client() -> MCPClient:
     """
     logger.info("Connecting to AgentCore Gateway: %s", GATEWAY_URL)
     sigv4 = BotoSigV4Auth(region=AWS_REGION, service="bedrock-agentcore")
-    return MCPClient(
-        lambda: streamablehttp_client(url=GATEWAY_URL, auth=sigv4)
-    )
+    return MCPClient(lambda: streamablehttp_client(url=GATEWAY_URL, auth=sigv4))
+
+
+# ── Intent-based tool routing for Nova models ────────────────────────
+# Nova models cannot reliably handle 18+ tools at once.  We detect the
+# user's intent and only forward the relevant subset of tools.
+#
+# MCP gateway tool names follow:  {target}___{tool_name}  (triple ___).
+# ─────────────────────────────────────────────────────────────────────
+
+TOOL_CATEGORIES: Dict[str, List[str]] = {
+    "ec2": [
+        "list_ec2_instances",
+        "describe_ec2_instance",
+        "restart_ec2_instance",
+        "diagnose_instance",
+    ],
+    "monitoring": [
+        "get_cpu_metrics",
+        "get_memory_metrics",
+        "get_disk_usage",
+        "get_cpu_metrics_for_instances",
+    ],
+    "remediation": [
+        "remediate_high_cpu",
+        "remediate_high_memory",
+        "remediate_disk_full",
+        "run_ssm_command",
+    ],
+    "notification": [
+        "send_teams_message",
+        "create_incident_notification",
+        "send_alert_with_failover",
+    ],
+    "approval": [
+        "request_approval",
+        "check_approval_status",
+        "update_approval_status",
+    ],
+}
+
+INTENT_KEYWORDS: Dict[str, List[str]] = {
+    "ec2": [
+        "list",
+        "instances",
+        "ec2",
+        "describe",
+        "show",
+        "which",
+        "what",
+        "all instances",
+        "running",
+        "stopped",
+    ],
+    "monitoring": [
+        "cpu",
+        "memory",
+        "mem",
+        "disk",
+        "metric",
+        "usage",
+        "utilization",
+        "monitor",
+        "health",
+    ],
+    "remediation": [
+        "remediate",
+        "fix",
+        "kill",
+        "cleanup",
+        "clean up",
+        "free disk",
+        "ssm",
+        "run command",
+        "execute",
+        "shell",
+    ],
+    "notification": [
+        "teams",
+        "notify",
+        "alert",
+        "incident",
+        "send message",
+        "send alert",
+        "send notification",
+        "email",
+    ],
+    "approval": [
+        "approval",
+        "approve",
+        "request approval",
+    ],
+}
+
+DEFAULT_CATEGORIES = ["ec2", "monitoring"]
+
+
+def detect_categories(prompt: str) -> List[str]:
+    """Detect which tool categories are relevant for *prompt*."""
+    prompt_lower = prompt.lower()
+    matched: List[str] = []
+
+    for category, keywords in INTENT_KEYWORDS.items():
+        if any(kw in prompt_lower for kw in keywords):
+            matched.append(category)
+
+    # Diagnose queries need both ec2 and monitoring tools
+    if any(w in prompt_lower for w in ("diagnose", "troubleshoot", "health check")):
+        for cat in ("ec2", "monitoring"):
+            if cat not in matched:
+                matched.append(cat)
+
+    return matched or DEFAULT_CATEGORIES
+
+
+def get_allowed_tool_names(categories: List[str]) -> List[str]:
+    """Return a flat list of tool-name substrings for the given categories."""
+    names: List[str] = []
+    for cat in categories:
+        names.extend(TOOL_CATEGORIES.get(cat, []))
+    return names
+
+
+# ── Tool-spec sanitisation ───────────────────────────────────────────
+
+
+def sanitize_tool_name(name: str) -> str:
+    """Replace hyphens / non-alphanumeric chars with underscores.
+
+    The Bedrock Converse API expects ``[a-zA-Z][a-zA-Z0-9_]*``.
+    MCP gateway names like ``aws-infra-target___list_ec2_instances_tool``
+    contain hyphens which cause Nova to produce invalid tool-use output.
+    """
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    if sanitized and not sanitized[0].isalpha():
+        sanitized = "t_" + sanitized
+    return sanitized
+
+
+def _simplify_schema(schema: dict, depth: int = 0, max_depth: int = 2) -> dict:
+    """Recursively simplify a JSON Schema for Nova compatibility."""
+    if not isinstance(schema, dict):
+        return schema
+
+    simplified: dict = {}
+
+    for key in ("type", "description", "default", "enum"):
+        if key in schema:
+            val = schema[key]
+            if key == "enum" and isinstance(val, list) and len(val) > 10:
+                val = val[:10]
+            simplified[key] = val
+
+    if depth >= max_depth:
+        if simplified.get("type") in ("object", "array"):
+            return {"type": "string", "description": simplified.get("description", "JSON value")}
+        return simplified
+
+    if "properties" in schema and isinstance(schema["properties"], dict):
+        simplified["type"] = "object"
+        simplified["properties"] = {
+            k: _simplify_schema(v, depth + 1, max_depth) for k, v in schema["properties"].items()
+        }
+        if "required" in schema:
+            simplified["required"] = schema["required"]
+
+    if "items" in schema:
+        simplified["type"] = "array"
+        simplified["items"] = _simplify_schema(schema["items"], depth + 1, max_depth)
+
+    for combinator in ("anyOf", "oneOf", "allOf"):
+        if combinator in schema and combinator not in simplified:
+            branches = schema[combinator]
+            if isinstance(branches, list) and branches:
+                simplified.update(_simplify_schema(branches[0], depth, max_depth))
+            break
+
+    if "type" not in simplified:
+        simplified["type"] = "string"
+
+    return simplified
+
+
+def _filter_tool_specs(
+    tool_specs: Optional[List[dict]],
+    allowed_names: Optional[List[str]],
+) -> Optional[List[dict]]:
+    """Keep only tool specs whose names match *allowed_names* (substring)."""
+    if not tool_specs or not allowed_names:
+        return tool_specs
+
+    filtered: List[dict] = []
+    for spec in tool_specs:
+        tool_spec = spec.get("toolSpec", spec)
+        name = tool_spec.get("name", "")
+        if any(allowed in name for allowed in allowed_names):
+            filtered.append(spec)
+
+    if not filtered and tool_specs:
+        logger.warning("Tool filter matched nothing — using first 5 tools as fallback")
+        filtered = tool_specs[:5]
+
+    return filtered
+
+
+def sanitize_tool_specs(
+    tool_specs: Optional[List[dict]],
+    allowed_names: Optional[List[str]] = None,
+) -> tuple[Optional[List[dict]], Dict[str, str]]:
+    """Sanitise tool specs for Nova compatibility.  Returns (specs, name_map).
+
+    ``name_map`` maps sanitised names → original names so that tool-call
+    events from the model can be translated back for the SDK registry.
+    """
+    if not tool_specs:
+        return tool_specs, {}
+
+    # Intent-based filtering
+    if allowed_names:
+        tool_specs = _filter_tool_specs(tool_specs, allowed_names)
+        logger.info(
+            "Tool routing: %d tools selected (patterns: %s)",
+            len(tool_specs) if tool_specs else 0,
+            allowed_names[:6],
+        )
+
+    name_map: Dict[str, str] = {}
+    sanitized: List[dict] = []
+
+    for spec in tool_specs or []:
+        spec = copy.deepcopy(spec)
+        tool_spec = spec.get("toolSpec", spec)
+
+        # Sanitise tool name (hyphens → underscores)
+        original_name = tool_spec.get("name", "")
+        clean_name = sanitize_tool_name(original_name)
+        if clean_name != original_name:
+            tool_spec["name"] = clean_name
+            name_map[clean_name] = original_name
+
+        # Remove outputSchema (not supported by Converse API)
+        tool_spec.pop("outputSchema", None)
+
+        # Truncate long descriptions
+        desc = tool_spec.get("description", "")
+        if len(desc) > 300:
+            tool_spec["description"] = desc[:300] + "..."
+
+        # Simplify input schema
+        input_schema = tool_spec.get("inputSchema", {})
+        json_schema = input_schema.get("json")
+        if isinstance(json_schema, dict):
+            input_schema["json"] = _simplify_schema(json_schema)
+
+        sanitized.append(spec)
+
+    return sanitized, name_map
 
 
 # ── Nova-safe Bedrock model ─────────────────────────────────────────
 
-class NovaBedrockModel(BedrockModel):
-    """BedrockModel subclass that normalizes Nova Lite streaming chunks.
 
-    Amazon Nova Lite sends tool-use input as a pre-parsed dict in
-    ConverseStream deltas, but the Strands SDK event loop expects
-    string chunks it can concatenate.  This subclass intercepts the
-    raw stream and converts any dict tool inputs to JSON strings
-    before they reach the SDK's handle_content_block_delta().
+class NovaBedrockModel(BedrockModel):
+    """BedrockModel subclass with all Nova-specific workarounds.
+
+    * **Sanitises tool names** — replaces hyphens with underscores so
+      Nova can produce valid tool-use JSON.
+    * **Reverse-maps tool names** — restores original (hyphenated) names
+      in model responses so the Strands SDK registry can find them.
+    * **Intent-based tool routing** — only the relevant 4-8 tools are
+      forwarded to Bedrock per request.
+    * **Normalises streaming chunks** — serialises dict tool-use inputs.
+    * **Retries automatically** — up to ``NOVA_MAX_RETRIES`` attempts
+      with exponential back-off for intermittent tool-use errors.
+    * **Falls back gracefully** — last-resort call without tools.
     """
 
     @staticmethod
-    def _normalize_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
-        """Ensure toolUse input deltas are always JSON strings."""
+    def _is_tool_use_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "invalid sequence" in msg and "tooluse" in msg
+
+    @staticmethod
+    def _normalize_chunk(chunk: dict[str, Any], name_map: Optional[Dict[str, str]] = None) -> dict[str, Any]:
+        """Normalise a streaming chunk for Nova compatibility."""
+        # Restore original tool name in contentBlockStart
+        if name_map:
+            cbs = chunk.get("contentBlockStart")
+            if cbs is not None:
+                tu_start = cbs.get("start", {}).get("toolUse")
+                if tu_start and tu_start.get("name") in name_map:
+                    tu_start["name"] = name_map[tu_start["name"]]
+
+        # Serialise dict tool-use inputs to JSON strings
         cbd = chunk.get("contentBlockDelta")
         if cbd is not None:
             tool_use = cbd.get("delta", {}).get("toolUse")
@@ -276,26 +561,95 @@ class NovaBedrockModel(BedrockModel):
         return chunk
 
     def _stream(self, callback, messages, tool_specs=None, system_prompt_content=None, tool_choice=None):
-        """Override to normalize streaming chunks before dispatch."""
+        """Override with sanitisation, retry, and fallback logic."""
         original_callback = callback
+
+        # Sanitise + route tool specs
+        allowed_names = getattr(_nova_tool_route, "allowed_tools", None)
+        sanitized_specs, name_map = sanitize_tool_specs(tool_specs, allowed_names)
+
+        if sanitized_specs is not None and tool_specs is not None:
+            logger.debug(
+                "Tool specs: %d original → %d after routing/sanitisation",
+                len(tool_specs),
+                len(sanitized_specs),
+            )
 
         def normalizing_callback(event=None):
             if event is not None:
-                event = self._normalize_chunk(event)
+                event = self._normalize_chunk(event, name_map)
             original_callback(event)
 
-        super()._stream(normalizing_callback, messages, tool_specs, system_prompt_content, tool_choice)
+        last_error: Exception | None = None
+
+        for attempt in range(1, NOVA_MAX_RETRIES + 1):
+            try:
+                super()._stream(
+                    normalizing_callback,
+                    messages,
+                    sanitized_specs,
+                    system_prompt_content,
+                    tool_choice,
+                )
+                return
+            except Exception as exc:
+                if not self._is_tool_use_error(exc):
+                    raise
+
+                last_error = exc
+                delay = NOVA_RETRY_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    "Nova tool-use error (attempt %d/%d). Retrying in %.1fs …",
+                    attempt,
+                    NOVA_MAX_RETRIES,
+                    delay,
+                )
+                time.sleep(delay)
+
+        # All retries exhausted — final attempt without tools
+        logger.warning("All %d retries failed. Final attempt without tools.", NOVA_MAX_RETRIES)
+        try:
+            super()._stream(
+                normalizing_callback,
+                messages,
+                tool_specs=None,
+                system_prompt_content=system_prompt_content,
+                tool_choice=None,
+            )
+        except Exception:
+            logger.error("Fallback without tools also failed")
+            raise last_error  # type: ignore[misc]
+
+
+# Thread-local for passing tool-route hints from caller → _stream()
+import threading
+
+_nova_tool_route = threading.local()
+
+
+def set_tool_route(prompt: str) -> None:
+    """Detect intent from *prompt* and set thread-local tool route.
+
+    Call this before invoking the agent so that ``NovaBedrockModel._stream``
+    knows which tools to forward to Bedrock.  No-op for non-Nova models.
+    """
+    if "nova" not in MODEL_ID.lower():
+        _nova_tool_route.allowed_tools = None
+        return
+
+    categories = detect_categories(prompt)
+    allowed = get_allowed_tool_names(categories)
+    _nova_tool_route.allowed_tools = allowed
+    logger.info("Intent categories: %s → %d tool patterns", categories, len(allowed))
 
 
 def create_agent(mcp_client: MCPClient, http_mode: bool = False, streaming: bool = True) -> Agent:
     """Build the Strands Agent with Bedrock model and MCP tools."""
-    # Use NovaBedrockModel for Nova models (chunk normalization),
-    # standard BedrockModel for Claude/others.
     model_cls = NovaBedrockModel if "nova" in MODEL_ID.lower() else BedrockModel
     model = model_cls(
         region_name=AWS_REGION,
         model_id=MODEL_ID,
-        max_tokens=4096,
+        max_tokens=8192,
         streaming=streaming,
     )
 
@@ -310,6 +664,7 @@ def create_agent(mcp_client: MCPClient, http_mode: bool = False, streaming: bool
 
 # ── HTTP server mode (for AgentCore runtime) ─────────────────────────
 
+
 def run_http_server() -> None:
     """Start an HTTP server on port 8080 for AgentCore invocations.
 
@@ -317,8 +672,8 @@ def run_http_server() -> None:
     Expected payload: {"prompt": "..."} or plain text.
     """
     import json
-    from http.server import HTTPServer, BaseHTTPRequestHandler
     import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     mcp_client = create_gateway_mcp_client()
     agent = create_agent(mcp_client, http_mode=True)
@@ -349,6 +704,9 @@ def run_http_server() -> None:
 
                 logger.info("Received prompt: %s", prompt[:200])
 
+                # Set tool route BEFORE invoking the agent
+                set_tool_route(prompt.strip())
+
                 with agent_lock:
                     result = agent(prompt.strip())
 
@@ -370,10 +728,12 @@ def run_http_server() -> None:
                 except Exception:
                     result_text = repr(result) if result else "Agent processing error"
 
-                response_body = json.dumps({
-                    "response": result_text,
-                    "stop_reason": getattr(result, "stop_reason", "end_turn"),
-                })
+                response_body = json.dumps(
+                    {
+                        "response": result_text,
+                        "stop_reason": getattr(result, "stop_reason", "end_turn"),
+                    }
+                )
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -382,6 +742,7 @@ def run_http_server() -> None:
 
             except Exception as exc:
                 import traceback
+
                 logger.error("Agent error: %s\n%s", exc, traceback.format_exc())
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
@@ -416,6 +777,7 @@ def run_http_server() -> None:
 
 # ── CLI mode (for local testing) ─────────────────────────────────────
 
+
 def run_cli() -> None:
     """Interactive CLI mode for local testing."""
     mcp_client = create_gateway_mcp_client()
@@ -438,6 +800,7 @@ def run_cli() -> None:
                 break
 
             try:
+                set_tool_route(user_input)
                 result = agent(user_input)
                 print(f"\nAgent: {result}\n")
             except Exception as exc:
@@ -460,4 +823,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
- 
