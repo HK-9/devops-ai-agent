@@ -16,7 +16,7 @@ from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 from web.agent import invoke as invoke_agent
 
@@ -462,15 +462,9 @@ def register_routes(app: Flask):
     """Register all routes on the Flask app."""
 
     @app.route("/")
-    def dashboard():
-        cw_data = get_cloudwatch_alarms()
-        return render_template(
-            "dashboard.html",
-            incidents=_incidents[-20:],
-            stats=build_stats(),
-            alarms=cw_data.get("alarms", []),
-            aws_error=cw_data.get("error"),
-        )
+    def index():
+        """Redirect to chat page."""
+        return redirect(url_for("chat"))
 
     @app.route("/chat")
     def chat():
