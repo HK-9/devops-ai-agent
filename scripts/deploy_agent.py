@@ -33,27 +33,27 @@ import boto3
 # Ensure scripts/ is on the path so `lib` is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from lib.aws import ac_client, ecr_login, tail_logs
 from lib.config import (
-    REGION,
     ACCOUNT,
-    AGENT_NAME,
     AGENT_ECR_REPO,
+    AGENT_NAME,
     AGENT_ROLE,
     GATEWAY_URL,
     MODEL_ID,
     PLATFORM,
+    REGION,
     ecr_uri,
     role_arn,
 )
-from lib.console import log, run, Colors
-from lib.aws import ac_client, ecr_login, tail_logs
+from lib.console import Colors, log, run
 from lib.docker import build_image, push_image
 from lib.runtime import update_runtime, wait_for_ready
-from lib.version import git_sha, git_branch, next_version, preflight_checks
+from lib.version import git_branch, git_sha, next_version, preflight_checks
 
 ECR_URI = ecr_uri(AGENT_ECR_REPO)
 ROLE_ARN = role_arn(AGENT_ROLE)
-DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deploy_agent"
+DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deployments" / "agent"
 
 # Environment variables injected into the container at runtime
 RUNTIME_ENV = {
@@ -65,6 +65,7 @@ RUNTIME_ENV = {
 
 
 # ── Agent-specific helpers ───────────────────────────────────────────────
+
 
 def _find_runtime_id() -> str | None:
     """Find the runtime ID for our agent, or None."""
@@ -87,6 +88,7 @@ def _get_runtime_info() -> dict | None:
 
 # ── Agent deploy step (create or update) ─────────────────────────────────
 
+
 def _step_deploy(tag: str) -> str:
     """Create or update the agent runtime. Returns the runtime ID."""
     ac = ac_client()
@@ -98,8 +100,12 @@ def _step_deploy(tag: str) -> str:
         log(f"\n[4/4] Updating runtime {existing_id} -> {tag}")
         # Use read-merge-write via the shared runtime module
         update_runtime(
-            existing_id, AGENT_ECR_REPO, tag,
-            AGENT_ROLE, protocol=None,  # Agent is HTTP, not MCP
+            existing_id,
+            AGENT_ECR_REPO,
+            tag,
+            AGENT_ROLE,
+            protocol=None,  # Agent is HTTP, not MCP
+            env_overrides=RUNTIME_ENV,
         )
         return existing_id
     else:
@@ -119,6 +125,7 @@ def _step_deploy(tag: str) -> str:
 
 # ── Commands ─────────────────────────────────────────────────────────────
 
+
 def cmd_deploy(args):
     """Full deployment pipeline: build -> push -> deploy -> wait."""
     tag = args.tag or next_version(AGENT_ECR_REPO)
@@ -130,11 +137,7 @@ def cmd_deploy(args):
         log(f"  Image: {ECR_URI}:{tag}")
         info = _get_runtime_info()
         if info:
-            cur_uri = (
-                info.get("agentRuntimeArtifact", {})
-                .get("containerConfiguration", {})
-                .get("containerUri", "n/a")
-            )
+            cur_uri = info.get("agentRuntimeArtifact", {}).get("containerConfiguration", {}).get("containerUri", "n/a")
             proto = info.get("protocolConfiguration", {})
             auth = info.get("authorizerConfiguration", {})
             log(f"  Current: {cur_uri}")
@@ -185,9 +188,7 @@ def cmd_status(args):
         log(f"No runtime found for '{AGENT_NAME}'")
         return
 
-    uri = info.get("agentRuntimeArtifact", {}).get(
-        "containerConfiguration", {}
-    ).get("containerUri", "n/a")
+    uri = info.get("agentRuntimeArtifact", {}).get("containerConfiguration", {}).get("containerUri", "n/a")
     tag = uri.rsplit(":", 1)[-1] if ":" in uri else "n/a"
 
     log(f"Agent:   {AGENT_NAME}")
@@ -257,16 +258,28 @@ def cmd_local(args):
         sys.exit(1)
 
     log(f"\nRunning locally ({PLATFORM})...")
-    run([
-        "docker", "run", "--rm", "-it",
-        "--platform", PLATFORM,
-        "-p", "8080:8080",
-        "-e", f"GATEWAY_URL={GATEWAY_URL}",
-        "-e", f"AWS_REGION={REGION}",
-        "-e", f"MODEL_ID={MODEL_ID}",
-        "-v", f"{Path.home()}/.aws:/home/bedrock_agentcore/.aws:ro",
-        f"{ECR_URI}:{tag}",
-    ], check=True)
+    run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-it",
+            "--platform",
+            PLATFORM,
+            "-p",
+            "8080:8080",
+            "-e",
+            f"GATEWAY_URL={GATEWAY_URL}",
+            "-e",
+            f"AWS_REGION={REGION}",
+            "-e",
+            f"MODEL_ID={MODEL_ID}",
+            "-v",
+            f"{Path.home()}/.aws:/home/bedrock_agentcore/.aws:ro",
+            f"{ECR_URI}:{tag}",
+        ],
+        check=True,
+    )
 
 
 def cmd_setup(args):
@@ -285,11 +298,13 @@ def cmd_setup(args):
     # IAM role
     trust = {
         "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Principal": {"Service": "bedrock-agentcore.amazonaws.com"},
-            "Action": "sts:AssumeRole",
-        }],
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {"Service": "bedrock-agentcore.amazonaws.com"},
+                "Action": "sts:AssumeRole",
+            }
+        ],
     }
     try:
         iam_client.get_role(RoleName=AGENT_ROLE)
@@ -317,6 +332,7 @@ def cmd_setup(args):
 
 # ── CLI entrypoint ───────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="DevOps Agent — Deployment Pipeline",
@@ -337,12 +353,11 @@ examples:
 
     # deploy
     p_deploy = sub.add_parser("deploy", help="Build, push, and deploy the agent")
-    p_deploy.add_argument("--tag", default=None,
-                          help="Image tag (default: auto-versioned v{N}-{sha})")
-    p_deploy.add_argument("--no-cache", action="store_true",
-                          help="Force full Docker rebuild (no layer cache)")
-    p_deploy.add_argument("--dry-run", action="store_true",
-                          help="Preview what would be deployed without making changes")
+    p_deploy.add_argument("--tag", default=None, help="Image tag (default: auto-versioned v{N}-{sha})")
+    p_deploy.add_argument("--no-cache", action="store_true", help="Force full Docker rebuild (no layer cache)")
+    p_deploy.add_argument(
+        "--dry-run", action="store_true", help="Preview what would be deployed without making changes"
+    )
     p_deploy.set_defaults(func=cmd_deploy)
 
     # status

@@ -33,17 +33,16 @@
             <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
                 <div class="flex h-16 items-center justify-between">
                     <div class="flex items-center">
-                        <span class="text-2xl mr-2">🚨</span>
-                        <span class="text-white font-bold text-lg">Incident Response Agent</span>
+                        <class="text-2xl mr-2">🤖</span>
+                        <class="text-white font-bold text-lg">DevOps AI Agent</span>
                     </div>
                     <div class="flex space-x-4">
-                        <a href="/" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/' %}bg-gray-900 text-white{% endif %}">Dashboard</a>
-                        <a href="/chat" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/chat' %}bg-gray-900 text-white{% endif %}">Chat</a>
+                        <a href="/chat" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/chat' or request.path == '/' %}bg-gray-900 text-white{% endif %}">Chat</a>
                         <a href="/audit" class="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium {% if request.path == '/audit' %}bg-gray-900 text-white{% endif %}">Audit Log</a>
                     </div>
                     <div class="flex items-center space-x-2">
-                        <span class="pulse-dot inline-block w-2 h-2 bg-green-400 rounded-full"></span>
-                        <span class="text-green-400 text-sm">Agent Online</span>
+                        <class="pulse-dot inline-block w-2 h-2 bg-green-400 rounded-full"></span>
+                        <class="text-green-400 text-sm">Agent Online</span>
                     </div>
                 </div>
             </div>
@@ -59,3 +58,4 @@
     {% block extra_scripts %}{% endblock %}
 </body>
 </html>
+ 

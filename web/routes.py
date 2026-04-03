@@ -1,47 +1,47 @@
-"""Routes for the DevOps AI Agent Web UI."""
+"""Routes for the DevOps AI Agent Web UI.
+
+All agent interactions go through the Strands Agent (web.agent) which
+connects to the AgentCore MCP Gateway.  No dependency on ``src/``.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-import uuid
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from flask import Flask, jsonify, render_template, request, session
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
-from src.agent.agent_core import DevOpsAgent
-from src.handlers.event_parser import build_agent_prompt_from_alarm, parse_eventbridge_alarm
+from web.agent import invoke as invoke_agent
 
 logger = logging.getLogger(__name__)
 
-# CloudWatch alarm names we monitor
-MONITORED_ALARMS = [
-    "devops-agent-high-cpu",
-    "devops-agent-high-memory",
-    "devops-agent-high-disk",
-]
+# Alarm name prefix — the provisioner Lambda creates per-instance alarms
+# with names like devops-agent-high-cpu-31d3b38f, so we discover them
+# dynamically via AlarmNamePrefix.
+ALARM_NAME_PREFIX = "devops-agent-high-"
 
 
 def get_cloudwatch_alarms() -> dict[str, Any]:
-    """Fetch current state of monitored CloudWatch alarms.
-    
+    """Fetch current state of monitored CloudWatch alarms (dynamic discovery).
+
     Returns dict with 'alarms' list and 'stats' summary.
     """
     region = os.environ.get("AWS_REGION", "ap-southeast-2")
-    
+
     try:
         cw = boto3.client("cloudwatch", region_name=region)
-        response = cw.describe_alarms(AlarmNames=MONITORED_ALARMS)
-        
+        response = cw.describe_alarms(AlarmNamePrefix=ALARM_NAME_PREFIX)
+
         alarms = []
         stats = {"total": 0, "alarm": 0, "ok": 0, "insufficient_data": 0}
-        
+
         for alarm in response.get("MetricAlarms", []):
             state = alarm.get("StateValue", "UNKNOWN")
             alarm_data = {
@@ -51,92 +51,46 @@ def get_cloudwatch_alarms() -> dict[str, Any]:
                 "threshold": alarm.get("Threshold"),
                 "description": alarm.get("AlarmDescription", ""),
                 "state_reason": alarm.get("StateReason", ""),
-                "state_updated": alarm.get("StateUpdatedTimestamp", "").isoformat() if alarm.get("StateUpdatedTimestamp") else "",
+                "state_updated": (
+                    alarm.get("StateUpdatedTimestamp", "").isoformat()
+                    if alarm.get("StateUpdatedTimestamp")
+                    else ""
+                ),
             }
             alarms.append(alarm_data)
             stats["total"] += 1
-            
+
             if state == "ALARM":
                 stats["alarm"] += 1
             elif state == "OK":
                 stats["ok"] += 1
             else:
                 stats["insufficient_data"] += 1
-        
+
         return {"alarms": alarms, "stats": stats, "error": None}
-        
+
     except NoCredentialsError:
         logger.warning("AWS credentials not configured")
         return {
             "alarms": [],
             "stats": {"total": 0, "alarm": 0, "ok": 0, "insufficient_data": 0},
-            "error": "AWS credentials not configured"
+            "error": "AWS credentials not configured",
         }
     except ClientError as e:
-        logger.warning(f"CloudWatch API error: {e}")
+        logger.warning("CloudWatch API error: %s", e)
         return {
             "alarms": [],
             "stats": {"total": 0, "alarm": 0, "ok": 0, "insufficient_data": 0},
-            "error": str(e)
+            "error": str(e),
         }
 
 _incidents: list[dict[str, Any]] = []
 _audit_logs: list[dict[str, Any]] = []
 
-def is_ec2_list_query(message: str) -> bool:
-    """Detect simple EC2 inventory/list queries."""
-    text = message.lower()
-    return (
-        ("ec2" in text or "instance" in text or "instances" in text)
-        and any(word in text for word in ["list", "show", "which", "what"])
-    )
 
-
-def infer_ec2_state_filter(message: str) -> str:
-    """Infer instance state filter from user message."""
-    text = message.lower()
-
-    if "all" in text:
-        return "all"
-    if "stopped" in text:
-        return "stopped"
-
-    return "running"
-
-
-def format_ec2_instances(tool_result: dict[str, Any], state_filter: str) -> str:
-    """Format EC2 list tool output into chat-friendly text."""
-    if tool_result.get("error"):
-        return tool_result.get("message", "Failed to fetch EC2 instances.")
-
-    instances = tool_result.get("instances", [])
-    count = tool_result.get("count", len(instances))
-
-    if not instances:
-        return f"No EC2 instances found for state filter: {state_filter}."
-
-    lines = [f"Found {count} EC2 instance(s) with state filter '{state_filter}':", ""]
-
-    for inst in instances:
-        lines.append(
-            f"- {inst.get('instance_id', 'N/A')} | "
-            f"{inst.get('name') or 'Unnamed'} | "
-            f"{inst.get('state', 'unknown')} | "
-            f"{inst.get('instance_type', 'N/A')} | "
-            f"Private IP: {inst.get('private_ip', 'N/A')} | "
-            f"Public IP: {inst.get('public_ip', 'N/A')}"
-        )
-
-    return "\n".join(lines)
-
-def is_cpu_metrics_query(message: str) -> bool:
-    """Detect CPU metric queries for EC2."""
-    text = message.lower()
-    return (
-        "cpu" in text
-        and any(word in text for word in ["metric", "metrics", "utilization", "usage", "show", "get"])
-    )
-
+# ── Query detection helpers ──────────────────────────────────────────
+# These detect the user's intent so we can craft a targeted prompt that
+# nudges the Strands Agent to the right MCP tool on the first turn.
 
 def extract_instance_id(message: str) -> str | None:
     """Extract an EC2 instance ID from the user message."""
@@ -147,78 +101,182 @@ def extract_instance_id(message: str) -> str | None:
 def infer_minutes_window(message: str) -> int:
     """Infer metrics lookback window from user message."""
     text = message.lower()
-
-    if "24h" in text or "24 hour" in text or "24 hours" in text:
+    if "24h" in text or "24 hour" in text:
         return 1440
-    if "6h" in text or "6 hour" in text or "6 hours" in text:
+    if "6h" in text or "6 hour" in text:
         return 360
-    if "2h" in text or "2 hour" in text or "2 hours" in text:
+    if "2h" in text or "2 hour" in text:
         return 120
-    if "30 min" in text or "30 mins" in text or "30 minutes" in text:
+    if "30 min" in text:
         return 30
-
     return 60
 
 
-def format_cpu_metrics(tool_result: dict[str, Any], instance_id: str, minutes: int) -> str:
-    """Format CPU metrics tool output into chat-friendly text."""
-    if tool_result.get("error"):
-        return tool_result.get("message", f"Failed to fetch CPU metrics for {instance_id}.")
+def _is_ec2_list_query(msg: str) -> bool:
+    t = msg.lower()
+    return (
+        ("ec2" in t or "instance" in t)
+        and any(w in t for w in ["list", "show", "which", "what", "all"])
+    )
 
-    summary = tool_result.get("summary", {})
-    datapoints = tool_result.get("datapoints", [])
 
-    if not datapoints:
-        return f"No CPU metrics found for {instance_id} in the last {minutes} minutes."
+def _is_cpu_query(msg: str) -> bool:
+    t = msg.lower()
+    return "cpu" in t and any(w in t for w in ["metric", "usage", "utilization", "show", "get", "check"])
 
-    lines = [
-        f"CPU metrics for {instance_id} (last {minutes} minutes):",
-        "",
-        f"Average CPU: {summary.get('average', 'N/A')}%",
-        f"Peak CPU: {summary.get('peak', 'N/A')}%",
-        f"Latest CPU: {summary.get('latest', 'N/A')}%",
-        f"Datapoints: {summary.get('datapoint_count', len(datapoints))}",
-        "",
-        "Recent datapoints:",
-    ]
 
-    for point in datapoints[-10:]:
-        lines.append(
-            f"- {point.get('timestamp', 'N/A')} | "
-            f"avg: {point.get('average', 'N/A')}% | "
-            f"max: {point.get('maximum', 'N/A')}% | "
-            f"min: {point.get('minimum', 'N/A')}%"
+def _is_memory_query(msg: str) -> bool:
+    t = msg.lower()
+    return ("memory" in t or "mem" in t) and any(w in t for w in ["metric", "usage", "utilization", "show", "get", "check"])
+
+
+def _is_disk_query(msg: str) -> bool:
+    t = msg.lower()
+    return "disk" in t and any(w in t for w in ["metric", "usage", "space", "show", "get", "check"])
+
+
+def _is_describe_query(msg: str) -> bool:
+    t = msg.lower()
+    return any(w in t for w in ["describe", "detail", "info about", "information"]) and (
+        "instance" in t or "ec2" in t or extract_instance_id(msg) is not None
+    )
+
+
+def _is_diagnose_query(msg: str) -> bool:
+    t = msg.lower()
+    return any(w in t for w in ["diagnose", "diagnostic", "health check", "troubleshoot"])
+
+
+def _is_send_alert_query(msg: str) -> bool:
+    t = msg.lower()
+    return any(w in t for w in ["send alert", "send notification", "notify team", "alert team", "send email"])
+
+
+def _is_remediate_query(msg: str) -> bool:
+    t = msg.lower()
+    return any(w in t for w in ["remediate", "fix", "kill process", "cleanup", "clean up", "free disk"])
+
+
+def _is_restart_query(msg: str) -> bool:
+    t = msg.lower()
+    return any(w in t for w in ["restart", "reboot", "stop and start"])
+
+
+def _is_ssm_query(msg: str) -> bool:
+    t = msg.lower()
+    return any(w in t for w in ["run command", "ssm", "execute", "shell command"]) and (
+        "instance" in t or extract_instance_id(msg) is not None
+    )
+
+
+def _is_approval_query(msg: str) -> bool:
+    t = msg.lower()
+    return any(w in t for w in ["request approval", "approval request", "approve", "need approval"])
+
+
+def _is_teams_query(msg: str) -> bool:
+    t = msg.lower()
+    return "teams" in t and any(w in t for w in ["send", "message", "notify", "post", "incident"])
+
+
+def _build_targeted_prompt(message: str) -> str:
+    """Optionally augment the user message with tool hints.
+
+    If we can detect the intent, we add a brief instruction so the agent
+    picks the right MCP tool on the first turn.  Otherwise we return the
+    raw message and let the agent reason freely.
+    """
+    iid = extract_instance_id(message)
+    minutes = infer_minutes_window(message)
+
+    if _is_ec2_list_query(message):
+        state = "all"
+        t = message.lower()
+        if "running" in t:
+            state = "running"
+        elif "stopped" in t:
+            state = "stopped"
+        return (
+            f"{message}\n\n[Hint: use list_ec2_instances_tool with "
+            f"state_filter=\"{state}\"]"
         )
 
-    return "\n".join(lines)
+    if _is_cpu_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use get_cpu_metrics_tool with "
+            f"instance_id=\"{iid}\", minutes={minutes}]"
+        )
 
-def run_async(coro):
-    """Run async code from Flask sync routes."""
-    try:
-        return asyncio.run(coro)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+    if _is_memory_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use get_memory_metrics_tool with "
+            f"instance_id=\"{iid}\", minutes={minutes}]"
+        )
 
+    if _is_disk_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use get_disk_usage_tool with "
+            f"instance_id=\"{iid}\", minutes={minutes}]"
+        )
 
-async def run_with_agent(callback):
-    """Create a fresh agent for one request, then clean it up."""
-    agent = DevOpsAgent()
-    await agent.initialise()
-    try:
-        return await callback(agent)
-    finally:
-        await agent.shutdown()
+    if _is_describe_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use describe_ec2_instance_tool with "
+            f"instance_id=\"{iid}\"]"
+        )
+
+    if _is_diagnose_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use diagnose_instance_tool with "
+            f"instance_id=\"{iid}\"]"
+        )
+
+    if _is_send_alert_query(message):
+        return (
+            f"{message}\n\n[Hint: use send_alert_with_failover_tool]"
+        )
+
+    if _is_remediate_query(message) and iid:
+        t = message.lower()
+        if "cpu" in t:
+            return f"{message}\n\n[Hint: use remediate_high_cpu_tool with instance_id=\"{iid}\"]"
+        if "disk" in t:
+            return f"{message}\n\n[Hint: use remediate_disk_full_tool with instance_id=\"{iid}\"]"
+        if "memory" in t or "mem" in t:
+            return f"{message}\n\n[Hint: use remediate_high_memory_tool with instance_id=\"{iid}\"]"
+
+    if _is_restart_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use request_approval_tool with "
+            f"instance_id=\"{iid}\", action_type=\"restart\"]"
+        )
+
+    if _is_ssm_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use run_ssm_command_tool with "
+            f"instance_id=\"{iid}\"]"
+        )
+
+    if _is_approval_query(message) and iid:
+        return (
+            f"{message}\n\n[Hint: use request_approval_tool with "
+            f"instance_id=\"{iid}\"]"
+        )
+
+    if _is_teams_query(message):
+        if "incident" in message.lower():
+            return f"{message}\n\n[Hint: use create_incident_notification_tool]"
+        return f"{message}\n\n[Hint: use send_teams_message_tool]"
+
+    # No specific detection — let the agent reason freely
+    return message
 
 
 def build_stats() -> dict[str, Any]:
     """Compute dashboard stats from CloudWatch alarms."""
     cw_data = get_cloudwatch_alarms()
     cw_stats = cw_data.get("stats", {})
-    
+
     return {
         "total_alarms": cw_stats.get("total", 0),
         "active_alarms": cw_stats.get("alarm", 0),
@@ -272,116 +330,129 @@ def derive_status(agent_result: dict[str, Any]) -> str:
     return "active"
 
 
-async def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, Any]:
-    """Run a simulated alert through the real DevOps agent."""
+def _detect_alarm_type(alarm_name: str, metric_name: str) -> str:
+    """Classify alarm as 'cpu', 'memory', or 'disk'."""
+    combined = (alarm_name + " " + metric_name).lower()
+    if any(ind in combined for ind in ("mem_used_percent", "memory", "mem")):
+        return "memory"
+    if any(ind in combined for ind in ("disk_used_percent", "disk", "diskspace")):
+        return "disk"
+    return "cpu"
 
 
-    eventbridge_event = {
-        "source": "aws.cloudwatch",
-        "account": "demo-account",
-        "region": alert_payload.get("region", "us-east-1"),
-        "time": alert_payload.get("timestamp", datetime.now(timezone.utc).isoformat()),
-        "detail": {
-            "alarmName": alert_payload.get("alarm_name", "DemoAlarm"),
-            "alarmDescription": f"Simulated alert for {alert_payload.get('alert_type', 'unknown')}",
-            "state": {
-                "value": "ALARM",
-                "reason": (
-                    f"{alert_payload.get('metric_name', 'Metric')} breached threshold: "
-                    f"{alert_payload.get('metric_value')} > {alert_payload.get('threshold')}"
-                ),
-                "timestamp": alert_payload.get(
-                    "timestamp", datetime.now(timezone.utc).isoformat()
-                ),
-            },
-            "previousState": {"value": "OK"},
-            "configuration": {
-                "metrics": [
-                    {
-                        "metricStat": {
-                            "metric": {
-                                "namespace": "AWS/EC2",
-                                "name": alert_payload.get("metric_name", "CPUUtilization"),
-                                "dimensions": {
-                                    "InstanceId": alert_payload.get("instance_id", "")
-                                },
-                            },
-                            "period": 300,
-                        }
-                    }
-                ],
-                "threshold": alert_payload.get("threshold", 0),
-                "comparisonOperator": "GreaterThanThreshold",
-                "evaluationPeriods": 1,
-            },
-        },
-    }
+def _build_alarm_prompt(
+    *, instance_id: str, alarm_name: str, metric_name: str, reason: str, threshold: float
+) -> str:
+    """Build a natural-language prompt from a simulated alarm event."""
+    severity = "CRITICAL"
+    alarm_type = _detect_alarm_type(alarm_name, metric_name)
 
-    alarm = parse_eventbridge_alarm(eventbridge_event)
-    prompt = build_agent_prompt_from_alarm(alarm)
+    header = (
+        f"A CloudWatch alarm fired for instance {instance_id}. "
+        f"Alarm: {alarm_name}. Metric: {metric_name}. "
+        f"Reason: {reason}. Severity: {severity}.\n\n"
+        f"You MUST follow these steps IN ORDER. "
+        f"Do NOT call list_ec2_instances.\n"
+        f"IMPORTANT: For MAJOR issues you MUST call the request_approval tool.\n\n"
+    )
+
+    if alarm_type == "memory":
+        return header + (
+            f"1. Call diagnose_instance with instance_id=\"{instance_id}\"\n"
+            f"2. Call get_memory_metrics with instance_id=\"{instance_id}\" and minutes=30\n"
+            f"3. Call describe_ec2_instance with instance_id=\"{instance_id}\"\n"
+            f"4. Classify as MINOR or MAJOR\n"
+            f"5a. MINOR: remediate_high_memory  5b. MAJOR: request_approval\n"
+            f"6. Call send_alert_with_failover with full details\n"
+        )
+    if alarm_type == "disk":
+        return header + (
+            f"1. Call diagnose_instance with instance_id=\"{instance_id}\"\n"
+            f"2. Call get_disk_usage with instance_id=\"{instance_id}\" and minutes=30\n"
+            f"3. Call describe_ec2_instance with instance_id=\"{instance_id}\"\n"
+            f"4. Classify as MINOR or MAJOR\n"
+            f"5a. MINOR: remediate_disk_full  5b. MAJOR: request_approval\n"
+            f"6. Call send_alert_with_failover with full details\n"
+        )
+    # CPU
+    return header + (
+        f"1. Call diagnose_instance with instance_id=\"{instance_id}\"\n"
+        f"2. Call get_cpu_metrics with instance_id=\"{instance_id}\" and minutes=30\n"
+        f"3. Call describe_ec2_instance with instance_id=\"{instance_id}\"\n"
+        f"4. Classify as MINOR or MAJOR\n"
+        f"5a. MINOR: remediate_high_cpu  5b. MAJOR: request_approval\n"
+        f"6. Call send_alert_with_failover with full details\n"
+    )
+
+
+def process_alert_with_agent(alert_payload: dict[str, Any]) -> dict[str, Any]:
+    """Run a simulated alert through the Strands Agent."""
     session_id = str(uuid.uuid4())
+    instance_id = alert_payload.get("instance_id", "")
+    metric_name = alert_payload.get("metric_name", "CPUUtilization")
+    alarm_name = alert_payload.get("alarm_name", "DemoAlarm")
+    threshold = alert_payload.get("threshold", 0)
+    metric_value = alert_payload.get("metric_value", 0)
+    reason = (
+        f"{metric_name} breached threshold: {metric_value} > {threshold}"
+    )
+
+    prompt = _build_alarm_prompt(
+        instance_id=instance_id,
+        alarm_name=alarm_name,
+        metric_name=metric_name,
+        reason=reason,
+        threshold=threshold,
+    )
 
     append_audit_entry(
         incident_id=session_id,
         phase="triage",
         result="SUCCESS",
         action="build_prompt_from_alarm",
-        instance_id=alarm.instance_id,
-        reasoning=prompt,
+        instance_id=instance_id,
+        reasoning=prompt[:1000],
     )
 
-    async def _work(agent: DevOpsAgent):
-        return await agent.invoke(prompt, session_id=session_id)
+    result = invoke_agent(prompt)
+    response_text = result.get("response", "")
+    status = derive_status(result)
 
-    agent_result = await run_with_agent(_work)
-    status = derive_status(agent_result)
-
-    tool_calls = agent_result.get("tool_calls", [])
-    for tc in tool_calls:
-        append_audit_entry(
-            incident_id=session_id,
-            phase="diagnosis",
-            result="SUCCESS",
-            action=tc.get("tool_call", "tool_call"),
-            instance_id=alarm.instance_id,
-            reasoning=json.dumps(tc, default=str)[:1000],
-        )
+    append_audit_entry(
+        incident_id=session_id,
+        phase=(
+            "verification" if status == "resolved"
+            else "escalation" if status == "escalated"
+            else "remediation"
+        ),
+        result=status.upper(),
+        action="agent_completed",
+        instance_id=instance_id,
+        reasoning=response_text[:1000],
+    )
 
     incident = {
         "incident_id": session_id,
         "status": status,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "resolved_at": datetime.now(timezone.utc).isoformat() if status == "resolved" else None,
+        "resolved_at": (
+            datetime.now(timezone.utc).isoformat() if status == "resolved" else None
+        ),
         "triage": {
             "alert_type": alert_payload.get("alert_type"),
-            "instance_id": alert_payload.get("instance_id"),
-            "severity": "P1" if alert_payload.get("metric_value", 0) >= 95 else "P2",
-            "alarm_name": alert_payload.get("alarm_name"),
-            "metric_name": alert_payload.get("metric_name"),
-            "metric_value": alert_payload.get("metric_value"),
-            "threshold": alert_payload.get("threshold"),
+            "instance_id": instance_id,
+            "severity": "P1" if metric_value >= 95 else "P2",
+            "alarm_name": alarm_name,
+            "metric_name": metric_name,
+            "metric_value": metric_value,
+            "threshold": threshold,
             "region": alert_payload.get("region"),
         },
-        "agent_response": agent_result.get("response", ""),
-        "tool_calls": tool_calls,
-        "turns": agent_result.get("turns", 0),
+        "agent_response": response_text,
+        "tool_calls": [],
+        "turns": 0,
         "raw_alert": alert_payload,
     }
-
-    append_audit_entry(
-        incident_id=session_id,
-        phase=(
-            "verification"
-            if status == "resolved"
-            else "escalation"
-            if status == "escalated"
-            else "remediation"
-        ),
-        result=status.upper(),
-        action="agent_completed",
-        instance_id=alarm.instance_id,
-        reasoning=agent_result.get("response", ""),
-    )
 
     _incidents.append(incident)
     return incident
@@ -391,15 +462,9 @@ def register_routes(app: Flask):
     """Register all routes on the Flask app."""
 
     @app.route("/")
-    def dashboard():
-        cw_data = get_cloudwatch_alarms()
-        return render_template(
-            "dashboard.html",
-            incidents=_incidents[-20:],
-            stats=build_stats(),
-            alarms=cw_data.get("alarms", []),
-            aws_error=cw_data.get("error"),
-        )
+    def index():
+        """Redirect to chat page."""
+        return redirect(url_for("chat"))
 
     @app.route("/chat")
     def chat():
@@ -422,86 +487,11 @@ def register_routes(app: Flask):
             if "session_id" not in session:
                 session["session_id"] = str(uuid.uuid4())
 
-            # Direct deterministic path for EC2 inventory queries
-            if is_ec2_list_query(message):
-                state_filter = infer_ec2_state_filter(message)
+            # Build a targeted prompt (adds tool hints when intent is clear)
+            prompt = _build_targeted_prompt(message)
 
-                async def _direct_ec2():
-                    async def _work(agent: DevOpsAgent):
-                        tool_result = await agent.call_tool(
-                            "list_ec2_instances",
-                            {
-                                "state_filter": state_filter,
-                                "max_results": 50,
-                            },
-                        )
-                        return {
-                            "response": format_ec2_instances(tool_result, state_filter),
-                            "tool_calls": [
-                                {
-                                    "tool_call": "list_ec2_instances",
-                                    "arguments": {
-                                        "state_filter": state_filter,
-                                        "max_results": 50,
-                                    },
-                                    "result": tool_result,
-                                }
-                            ],
-                            "turns": 1,
-                        }
-
-                    return await run_with_agent(_work)
-
-                result = run_async(_direct_ec2())
-            elif is_cpu_metrics_query(message):
-                instance_id = extract_instance_id(message)
-                if not instance_id:
-                    return jsonify(
-                        {
-                            "error": "Please provide an EC2 instance ID, for example: i-0123456789abcdef0"
-                        }
-                    ), 400
-
-                minutes = infer_minutes_window(message)
-
-                async def _direct_cpu():
-                    async def _work(agent: DevOpsAgent):
-                        tool_result = await agent.call_tool(
-                            "get_cpu_metrics",
-                            {
-                                "instance_id": instance_id,
-                                "period": 300,
-                                "minutes": minutes,
-                            },
-                        )
-                        return {
-                            "response": format_cpu_metrics(tool_result, instance_id, minutes),
-                            "tool_calls": [
-                                {
-                                    "tool_call": "get_cpu_metrics",
-                                    "arguments": {
-                                        "instance_id": instance_id,
-                                        "period": 300,
-                                        "minutes": minutes,
-                                    },
-                                    "result": tool_result,
-                                }
-                            ],
-                            "turns": 1,
-                        }
-
-                    return await run_with_agent(_work)
-
-                result = run_async(_direct_cpu())
-
-            else:
-                async def _chat():
-                    async def _work(agent: DevOpsAgent):
-                        return await agent.invoke(message, session_id=session["session_id"])
-
-                    return await run_with_agent(_work)
-
-                result = run_async(_chat())
+            # Invoke the Strands Agent (synchronous, thread-safe)
+            result = invoke_agent(prompt)
 
             append_audit_entry(
                 incident_id=session["session_id"],
@@ -512,14 +502,12 @@ def register_routes(app: Flask):
             )
 
             if result.get("error"):
-                return jsonify({"error": result.get("message", "Unknown error")}), 500
+                return jsonify({"error": result["error"]}), 500
 
             return jsonify(
                 {
                     "response": result.get("response", ""),
                     "session_id": session["session_id"],
-                    "tool_calls": result.get("tool_calls", []),
-                    "turns": result.get("turns", 0),
                 }
             )
         except Exception as exc:
@@ -601,7 +589,7 @@ def register_routes(app: Flask):
             }
 
             alert = simulated_alerts.get(scenario, simulated_alerts["high_cpu"])
-            incident = run_async(process_alert_with_agent(alert))
+            incident = process_alert_with_agent(alert)
 
             return jsonify(
                 {

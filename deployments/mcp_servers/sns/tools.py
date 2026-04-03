@@ -2,7 +2,8 @@
 AWS SNS MCP tools.
 
 Provides an alert tool with Teams-to-SNS failover logic,
-and a request_approval tool for the human-in-the-loop workflow.
+a request_approval tool for the human-in-the-loop workflow,
+and approval status tools for the AgentCore-native approval flow.
 """
 
 from __future__ import annotations
@@ -94,7 +95,8 @@ async def request_approval(
     """Store a proposed remediation action and send an email with approve/reject links.
 
     The engineer clicks the link to approve or reject; the Approval Handler
-    Lambda at the other end of the API Gateway executes the action.
+    Lambda at the other end of the API Gateway invokes the AgentCore agent
+    to execute the action.
 
     Supported ``action_type`` values:  restart, disk_cleanup, kill_process,
     cache_clear.
@@ -212,3 +214,92 @@ def _schedule_reminder(approval_id: str, approve_url: str, reject_url: str) -> N
         logger.info("Reminder schedule '%s' created for %s at %s", schedule_name, approval_id, fire_at.isoformat())
     except Exception as exc:
         logger.error("Failed to create reminder schedule: %s", exc)
+
+
+# ── Approval Status Tools (for AgentCore-native flow) ────────────────────
+
+
+async def check_approval_status(approval_id: str) -> dict[str, Any]:
+    """Check the current status of an approval request.
+
+    Used by the agent after being invoked by the approval handler Lambda
+    to verify the approval is valid before executing the action.
+
+    Args:
+        approval_id: The approval ID to check.
+
+    Returns:
+        Dict with approval details including status, instance_id,
+        action_type, reason, and details.
+    """
+    table_name = os.environ.get("APPROVALS_TABLE", "").strip()
+    if not table_name:
+        return {"error": True, "message": "APPROVALS_TABLE not configured"}
+
+    try:
+        ddb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = ddb.Table(table_name)
+        resp = table.get_item(Key={"approval_id": approval_id})
+        item = resp.get("Item")
+
+        if not item:
+            return {
+                "error": True,
+                "message": f"Approval {approval_id} not found",
+            }
+
+        logger.info("Approval %s status: %s", approval_id, item.get("status"))
+        return {
+            "approval_id": approval_id,
+            "status": item.get("status", "unknown"),
+            "instance_id": item.get("instance_id", ""),
+            "action_type": item.get("action_type", ""),
+            "reason": item.get("reason", ""),
+            "details": item.get("details", ""),
+            "created_at": item.get("created_at", ""),
+            "decided_at": item.get("decided_at", ""),
+        }
+    except Exception as exc:
+        logger.error("Failed to check approval status: %s", exc)
+        return {"error": True, "message": f"DynamoDB error: {exc}"}
+
+
+async def update_approval_status(approval_id: str, status: str) -> dict[str, Any]:
+    """Update the status of an approval request (e.g. mark as 'executed').
+
+    Called by the agent after it has successfully executed an approved
+    action, to record that execution is complete.
+
+    Args:
+        approval_id: The approval ID to update.
+        status:      New status (typically 'executed' or 'failed').
+
+    Returns:
+        Dict confirming the update.
+    """
+    table_name = os.environ.get("APPROVALS_TABLE", "").strip()
+    if not table_name:
+        return {"error": True, "message": "APPROVALS_TABLE not configured"}
+
+    try:
+        ddb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = ddb.Table(table_name)
+        table.update_item(
+            Key={"approval_id": approval_id},
+            UpdateExpression="SET #s = :s, executed_at = :t",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":s": status,
+                ":t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+        )
+        logger.info("Approval %s status updated to: %s", approval_id, status)
+        return {
+            "approval_id": approval_id,
+            "status": status,
+            "message": f"Approval status updated to '{status}'",
+        }
+    except Exception as exc:
+        logger.error("Failed to update approval status: %s", exc)
+        return {"error": True, "message": f"DynamoDB error: {exc}"}
+ 

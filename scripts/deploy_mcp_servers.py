@@ -123,6 +123,29 @@ def cmd_deploy(args):
         log(f"\nBuild failed for: {', '.join(failed)}", Colors.RED)
         sys.exit(1)
 
+    # Update IAM inline policies for deployed servers
+    log(f"\n{'=' * 60}", Colors.BOLD)
+    log("  PHASE: Update IAM Role Policies", Colors.BOLD)
+    log(f"{'=' * 60}", Colors.BOLD)
+    import boto3
+    iam = boto3.client("iam", region_name="ap-southeast-2")
+    for name in names:
+        server = MCP_SERVERS[name]
+        policy_file = PROJECT_ROOT / server["deploy_dir"] / "permissions-policy.json"
+        if policy_file.exists():
+            log(f"\n  [{name}]", Colors.BOLD)
+            try:
+                iam.put_role_policy(
+                    RoleName=server["role"],
+                    PolicyName=f"{name}-server-permissions",
+                    PolicyDocument=policy_file.read_text(),
+                )
+                log(f"  ✓ Applied {policy_file.name} → {server['role']}", Colors.GREEN)
+            except Exception as exc:
+                log(f"  ✗ IAM policy update failed: {exc}", Colors.RED)
+        else:
+            log(f"\n  [{name}] No permissions-policy.json found — skipping", Colors.YELLOW)
+
     # Push
     log(f"\n{'=' * 60}", Colors.BOLD)
     log("  PHASE: Push to ECR", Colors.BOLD)

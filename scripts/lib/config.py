@@ -19,28 +19,28 @@ PLATFORM = "linux/arm64"  # AgentCore runtimes require arm64
 
 MCP_SERVERS = {
     "aws_infra": {
-        "deploy_dir": "deploy_aws_infra",
+        "deploy_dir": "deployments/mcp_servers/aws_infra",
         "runtime_name": "mcp_server",
         "runtime_id": "mcp_server-4kjU5oAHWM",
         "ecr_repo": "bedrock_agentcore-mcp_server",
         "role": "aws-infra-server",
     },
     "monitoring": {
-        "deploy_dir": "deploy_monitoring",
+        "deploy_dir": "deployments/mcp_servers/monitoring",
         "runtime_name": "monitoring_server",
         "runtime_id": "monitoring_server-CI86d62MYP",
         "ecr_repo": "bedrock_agentcore-monitoring_server",
         "role": "aws-infra-server",
     },
     "sns": {
-        "deploy_dir": "deploy_sns",
+        "deploy_dir": "deployments/mcp_servers/sns",
         "runtime_name": "sns_server",
         "runtime_id": "sns_server-2f8klN8rTF",
         "ecr_repo": "bedrock_agentcore-sns_server",
         "role": "aws-infra-server",
     },
     "teams": {
-        "deploy_dir": "deploy_teams",
+        "deploy_dir": "deployments/mcp_servers/teams",
         "runtime_name": "teams_server",
         "runtime_id": "teams_server-hbrhm38Ef3",
         "ecr_repo": "bedrock_agentcore-teams_server",
@@ -53,7 +53,7 @@ MCP_SERVERS = {
 AGENT_NAME = "devops_agent"
 AGENT_ECR_REPO = f"bedrock_agentcore-{AGENT_NAME}"
 AGENT_ROLE = "devops-agent-runner"
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
+MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-pro-v1:0")
 
 # ── Gateway ──────────────────────────────────────────────────────────────
 
@@ -90,6 +90,7 @@ GATEWAY_CREDENTIAL_CONFIG = [
 
 
 # ── Derived helpers ──────────────────────────────────────────────────────
+
 
 def ecr_uri(ecr_repo: str) -> str:
     """Full ECR image URI (without tag)."""

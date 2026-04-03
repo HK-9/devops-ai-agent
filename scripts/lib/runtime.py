@@ -6,13 +6,20 @@ from __future__ import annotations
 
 import time
 
-from .config import role_arn, ecr_uri
-from .console import log, Colors
 from .aws import ac_client
+from .config import ecr_uri, role_arn
+from .console import Colors, log
 
 
-def update_runtime(runtime_id: str, ecr_repo: str, tag: str,
-                   role: str, *, protocol: str | None = "MCP") -> bool:
+def update_runtime(
+    runtime_id: str,
+    ecr_repo: str,
+    tag: str,
+    role: str,
+    *,
+    protocol: str | None = "MCP",
+    env_overrides: dict[str, str] | None = None,
+) -> bool:
     """Update a runtime using read-merge-write to preserve existing config.
 
     Fetches the current runtime configuration, overlays only the container
@@ -26,6 +33,7 @@ def update_runtime(runtime_id: str, ecr_repo: str, tag: str,
         tag: Image tag to deploy.
         role: IAM role name for the runtime.
         protocol: Server protocol ("MCP" for MCP servers, None for agents).
+        env_overrides: Extra env vars to merge into the runtime (e.g. GATEWAY_URL).
     """
     image_uri = f"{ecr_uri(ecr_repo)}:{tag}"
     ac = ac_client()
@@ -38,16 +46,15 @@ def update_runtime(runtime_id: str, ecr_repo: str, tag: str,
         # MERGE — overlay only what changes
         env_vars = current.get("environmentVariables", {})
         env_vars["DEPLOY_VERSION"] = tag
+        # Merge caller-provided env vars (e.g. updated GATEWAY_URL, MODEL_ID)
+        if env_overrides:
+            env_vars.update(env_overrides)
 
         update_params = {
             "agentRuntimeId": runtime_id,
-            "agentRuntimeArtifact": {
-                "containerConfiguration": {"containerUri": image_uri}
-            },
+            "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": image_uri}},
             "roleArn": current.get("roleArn", role_arn(role)),
-            "networkConfiguration": current.get(
-                "networkConfiguration", {"networkMode": "PUBLIC"}
-            ),
+            "networkConfiguration": current.get("networkConfiguration", {"networkMode": "PUBLIC"}),
             "environmentVariables": env_vars,
         }
 
@@ -89,11 +96,7 @@ def wait_for_ready(runtime_id: str, timeout: int = 300) -> bool:
 
         if status != last_status:
             elapsed = int(time.time() - start)
-            uri = (
-                resp.get("agentRuntimeArtifact", {})
-                .get("containerConfiguration", {})
-                .get("containerUri", "")
-            )
+            uri = resp.get("agentRuntimeArtifact", {}).get("containerConfiguration", {}).get("containerUri", "")
             log(f"  [{elapsed}s] {status}  image={uri}")
             last_status = status
 
